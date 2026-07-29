@@ -9,7 +9,7 @@ import pandas as pd
 import io
 
 # Configuration de la base de données SQLite
-DATABASE_URL = "sqlite:///./tech_debt_v7.db"
+DATABASE_URL = "sqlite:///./tech_debt_v8.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -62,7 +62,6 @@ def create_project_endpoint(name: str, description: str = "", is_pilot: bool = F
     if not clean_name:
         raise HTTPException(status_code=400, detail="Le nom du projet est requis")
     
-    # Vérification insensible à la casse pour éviter les doublons type "MonApp" et "monapp"
     existing = db.query(ProjectModel).filter(func.lower(ProjectModel.name) == clean_name.lower()).first()
     if existing:
         raise HTTPException(status_code=400, detail=f"Une application nommée '{existing.name}' existe déjà !")
@@ -101,7 +100,6 @@ async def import_projects(file: UploadFile = File(...), db: Session = Depends(ge
                 if val in ['true', '1', 'oui', 'yes']:
                     is_pilot_val = True
 
-            # Vérification unicité (insensible à la casse)
             existing = db.query(ProjectModel).filter(func.lower(ProjectModel.name) == name.lower()).first()
             if not existing:
                 db_project = ProjectModel(name=name, description=description, is_pilot=is_pilot_val)
@@ -129,6 +127,10 @@ def create_debt_endpoint(
 ):
     start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
     target = datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else None
+    
+    if start and target and target < start:
+        raise HTTPException(status_code=400, detail="La date cible doit être supérieure ou égale à la date de début.")
+
     db_debt = TechDebtModel(
         title=title,
         category=category,
@@ -162,6 +164,9 @@ def update_debt_endpoint(
     
     start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
     target = datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else None
+    
+    if start and target and target < start:
+        raise HTTPException(status_code=400, detail="La date cible doit être supérieure ou égale à la date de début.")
     
     db_debt.project_id = project_id
     db_debt.title = title
@@ -427,7 +432,7 @@ def read_root(db: Session = Depends(get_db)):
                         <div class="grid grid-cols-2 gap-2">
                             <div>
                                 <label class="block text-[11px] text-slate-500 mb-1">Date début :</label>
-                                <input name="start_date" id="debt_start_date" type="date" class="w-full border p-2 rounded text-sm" />
+                                <input name="start_date" id="debt_start_date" type="date" onchange="updateMinTargetDate()" class="w-full border p-2 rounded text-sm" />
                             </div>
                             <div>
                                 <label class="block text-[11px] text-slate-500 mb-1">Date cible :</label>
@@ -440,6 +445,7 @@ def read_root(db: Session = Depends(get_db)):
                             <button type="button" id="debt-cancel-btn" onclick="resetDebtForm()" class="hidden px-3 bg-slate-200 text-slate-700 rounded text-sm font-medium hover:bg-slate-300">Annuler</button>
                         </div>
                     </form>
+                    <p id="debtMessage" class="text-xs mt-3 font-medium"></p>
                 </div>
             </div>
 
@@ -516,6 +522,19 @@ def read_root(db: Session = Depends(get_db)):
             }
         }
 
+        function updateMinTargetDate() {
+            const startDate = document.getElementById('debt_start_date').value;
+            const targetDateInput = document.getElementById('debt_target_date');
+            if (startDate) {
+                targetDateInput.min = startDate;
+                if (targetDateInput.value && targetDateInput.value < startDate) {
+                    targetDateInput.value = startDate;
+                }
+            } else {
+                targetDateInput.removeAttribute('min');
+            }
+        }
+
         function filterTable() {
             const filterValue = document.getElementById('filterPilot').value;
             const rows = document.querySelectorAll('.debt-row');
@@ -540,6 +559,8 @@ def read_root(db: Session = Depends(get_db)):
             document.getElementById('debt_assignee').value = assignee === 'Non assigné' ? '' : assignee;
             document.getElementById('debt_start_date').value = startDate;
             document.getElementById('debt_target_date').value = targetDate;
+            
+            updateMinTargetDate();
 
             document.getElementById('debt-form-title').innerText = "✏️ Modifier la Dette";
             document.getElementById('debt-submit-btn').innerText = "Mettre à jour";
@@ -557,6 +578,8 @@ def read_root(db: Session = Depends(get_db)):
             document.getElementById('debt_assignee').value = '';
             document.getElementById('debt_start_date').value = '';
             document.getElementById('debt_target_date').value = '';
+            document.getElementById('debt_target_date').removeAttribute('min');
+            document.getElementById('debtMessage').innerText = '';
 
             document.getElementById('debt-form-title').innerText = "⚠️ Déclarer une Dette";
             document.getElementById('debt-submit-btn').innerText = "Ajouter la dette";
@@ -584,6 +607,16 @@ def read_root(db: Session = Depends(get_db)):
         async function saveDebt(form) {
             const id = document.getElementById('debt_id').value;
             const formData = new FormData(form);
+            const startDate = formData.get('start_date');
+            const targetDate = formData.get('target_date');
+            const msgEl = document.getElementById('debtMessage');
+
+            if (startDate && targetDate && targetDate < startDate) {
+                msgEl.innerText = "Erreur : La date cible doit être supérieure ou égale à la date de début.";
+                msgEl.className = 'text-xs mt-3 font-medium text-rose-600';
+                return;
+            }
+
             const params = new URLSearchParams();
             for (const pair of formData.entries()) {
                 if (pair[0] !== 'debt_id') {
@@ -604,7 +637,9 @@ def read_root(db: Session = Depends(get_db)):
                 resetDebtForm();
                 window.location.reload();
             } else {
-                alert("Erreur lors de l'enregistrement de la dette");
+                const err = await res.json();
+                msgEl.innerText = err.detail || "Erreur lors de l'enregistrement de la dette";
+                msgEl.className = 'text-xs mt-3 font-medium text-rose-600';
             }
         }
 
