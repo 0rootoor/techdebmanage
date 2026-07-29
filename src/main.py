@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import pandas as pd
 import io
 
@@ -184,7 +184,7 @@ def read_root(db: Session = Depends(get_db)):
     
     project_options = "".join([f'<option value="{p.id}">{p.name}</option>' for p in projects])
     
-    # Tableau des Dettes avec colonnes Modifier / Supprimer
+    # Tableau des Dettes
     debts_rows = ""
     for d in debts:
         p_name = d.project.name if d.project else "Inconnu"
@@ -221,12 +221,27 @@ def read_root(db: Session = Depends(get_db)):
     if not debts:
         debts_rows = '<tr><td colspan="5" class="p-8 text-center text-slate-400">Aucune dette enregistrée pour le moment.</td></tr>'
 
-    # Planning
+    # Planning & Gantt Generator
     sorted_debts = sorted(debts, key=lambda x: x.target_date if x.target_date else date.max)
     planning_cards = ""
+    gantt_rows = ""
+    
+    # Calcul des bornes de dates pour le Gantt (min et max)
+    valid_dates = [d.target_date for d in debts if d.target_date]
+    if valid_dates:
+        min_date = min(valid_dates) - timedelta(days=5)
+        max_date = max(valid_dates) + timedelta(days=10)
+        total_days_span = (max_date - min_date).days or 1
+    else:
+        min_date = date.today()
+        max_date = date.today() + timedelta(days=30)
+        total_days_span = 30
+
     for d in sorted_debts:
         p_name = d.project.name if d.project else "Inconnu"
         target_str = d.target_date.strftime("%Y-%m-%d") if d.target_date else "Non planifiée"
+        
+        # Liste (Planning classique)
         planning_cards += f"""
         <div class="p-4 border rounded-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-slate-50">
             <div class="space-y-1">
@@ -246,8 +261,40 @@ def read_root(db: Session = Depends(get_db)):
             </div>
         </div>
         """
+
+        # Ligne Diagramme de Gantt
+        if d.target_date:
+            end_d = d.target_date
+            # On estime le début en reculant du nombre de jours de charge
+            start_d = end_d - timedelta(days=d.cost_days)
+            if start_d < min_date:
+                start_d = min_date
+            
+            # Calcul des pourcentages de positionnement CSS
+            left_percent = max(0, min(100, ((start_d - min_date).days / total_days_span) * 100))
+            duration_days = (end_d - start_d).days or 1
+            width_percent = max(2, min(100 - left_percent, (duration_days / total_days_span) * 100))
+            
+            bar_color = "bg-emerald-500" if d.status == "Résolue" else ("bg-blue-500" if d.status == "En cours" else "bg-indigo-500")
+            
+            gantt_rows += f"""
+            <div class="flex items-center py-2 border-b border-slate-100 text-xs">
+                <div class="w-1/4 truncate font-medium text-slate-700 pr-2" title="{d.title} ({p_name})">
+                    <span class="text-blue-600 font-semibold">[{p_name}]</span> {d.title}
+                </div>
+                <div class="w-3/4 relative h-6 bg-slate-100 rounded flex items-center">
+                    <div style="left: {left_percent}%; width: {width_percent}%;" 
+                         class="absolute h-4 {bar_color} rounded shadow-sm text-[10px] text-white px-1 flex items-center justify-between truncate"
+                         title="Charge: {d.cost_days}j | Cible: {target_str}">
+                        <span class="truncate">{d.cost_days}j</span>
+                    </div>
+                </div>
+            </div>
+            """
+
     if not debts:
         planning_cards = '<div class="text-center text-slate-400 py-6">Aucune dette à planifier.</div>'
+        gantt_rows = '<div class="text-center text-slate-400 py-6">Aucune donnée pour le Gantt.</div>'
 
     html_content = """<!DOCTYPE html>
 <html lang="fr">
@@ -280,7 +327,7 @@ def read_root(db: Session = Depends(get_db)):
         <!-- Navigation par onglets -->
         <div class="flex gap-2 border-b pb-2">
             <button onclick="switchTab('register')" id="btn-register" class="px-4 py-2 rounded font-medium text-sm bg-blue-600 text-white">Registre & Saisie</button>
-            <button onclick="switchTab('planning')" id="btn-planning" class="px-4 py-2 rounded font-medium text-sm bg-white text-slate-600 border">📅 Planning & Échéances</button>
+            <button onclick="switchTab('planning')" id="btn-planning" class="px-4 py-2 rounded font-medium text-sm bg-white text-slate-600 border">📅 Planning & Gantt</button>
         </div>
 
         <!-- ONGLET 1 : REGISTRE ET SAISIE -->
@@ -375,12 +422,29 @@ def read_root(db: Session = Depends(get_db)):
             </div>
         </div>
 
-        <!-- ONGLET 2 : PLANNING -->
-        <div id="tab-planning" class="hidden bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-6">
-            <h2 class="text-lg font-semibold text-slate-700">📅 Planning de Résolution (Trié par Date Cible)</h2>
-            <p class="text-sm text-slate-500">Vue chronologique des actions de refactoring planifiées.</p>
-            <div class="space-y-4">
-                PLANNING_CARDS_PLACEHOLDER
+        <!-- ONGLET 2 : PLANNING & GANTT -->
+        <div id="tab-planning" class="hidden space-y-6">
+            <!-- Diagramme de Gantt -->
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-lg font-semibold text-slate-700">📊 Diagramme de Gantt (Planification)</h2>
+                    <div class="flex gap-3 text-xs">
+                        <span class="flex items-center gap-1"><span class="w-3 h-3 bg-indigo-500 rounded inline-block"></span> Ouverte</span>
+                        <span class="flex items-center gap-1"><span class="w-3 h-3 bg-blue-500 rounded inline-block"></span> En cours</span>
+                        <span class="flex items-center gap-1"><span class="w-3 h-3 bg-emerald-500 rounded inline-block"></span> Résolue</span>
+                    </div>
+                </div>
+                <div class="space-y-1">
+                    GANTT_ROWS_PLACEHOLDER
+                </div>
+            </div>
+
+            <!-- Liste chronologique -->
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
+                <h2 class="text-lg font-semibold text-slate-700">📅 Liste Chronologique des Échéances</h2>
+                <div class="space-y-4">
+                    PLANNING_CARDS_PLACEHOLDER
+                </div>
             </div>
         </div>
 
@@ -529,5 +593,6 @@ def read_root(db: Session = Depends(get_db)):
     html_content = html_content.replace("PROJECT_OPTIONS_PLACEHOLDER", project_options)
     html_content = html_content.replace("DEBTS_ROWS_PLACEHOLDER", debts_rows)
     html_content = html_content.replace("PLANNING_CARDS_PLACEHOLDER", planning_cards)
+    html_content = html_content.replace("GANTT_ROWS_PLACEHOLDER", gantt_rows)
 
     return html_content
