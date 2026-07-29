@@ -52,7 +52,7 @@ def get_db():
     finally:
         db.close()
 
-# --- API Endpoints : Projets & Gestion ---
+# --- API Endpoints : Projets ---
 
 @app.post("/api/projects")
 def create_project_endpoint(name: str, description: str = "", db: Session = Depends(get_db)):
@@ -66,33 +66,6 @@ def create_project_endpoint(name: str, description: str = "", db: Session = Depe
     db.add(db_project)
     db.commit()
     return {"message": "Projet créé avec succès"}
-
-@app.put("/api/projects/{project_id}")
-def update_project_endpoint(project_id: int, name: str, description: str = "", db: Session = Depends(get_db)):
-    db_project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
-    if not db_project:
-        raise HTTPException(status_code=404, detail="Application non trouvée")
-    
-    if not name.strip():
-        raise HTTPException(status_code=400, detail="Le nom du projet est requis")
-    
-    existing = db.query(ProjectModel).filter(ProjectModel.name == name.strip(), ProjectModel.id != project_id).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Une autre application porte déjà ce nom")
-
-    db_project.name = name.strip()
-    db_project.description = description.strip()
-    db.commit()
-    return {"message": "Application mise à jour avec succès"}
-
-@app.delete("/api/projects/{project_id}")
-def delete_project_endpoint(project_id: int, db: Session = Depends(get_db)):
-    db_project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
-    if not db_project:
-        raise HTTPException(status_code=404, detail="Application non trouvée")
-    db.delete(db_project)
-    db.commit()
-    return {"message": "Application supprimée avec succès"}
 
 @app.post("/api/projects/import")
 async def import_projects(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -128,7 +101,7 @@ async def import_projects(file: UploadFile = File(...), db: Session = Depends(ge
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Erreur : {str(e)}")
 
-# --- API Endpoints : Dettes Techniques ---
+# --- API Endpoints : Dettes Techniques (CRUD complet) ---
 
 @app.post("/api/debts")
 def create_debt_endpoint(
@@ -155,6 +128,43 @@ def create_debt_endpoint(
     db.commit()
     return {"message": "Dette ajoutée avec succès"}
 
+@app.put("/api/debts/{debt_id}")
+def update_debt_endpoint(
+    debt_id: int,
+    project_id: int,
+    title: str,
+    category: str,
+    impact: str,
+    cost_days: int,
+    assignee: str = "",
+    target_date: str = "",
+    db: Session = Depends(get_db)
+):
+    db_debt = db.query(TechDebtModel).filter(TechDebtModel.id == debt_id).first()
+    if not db_debt:
+        raise HTTPException(status_code=404, detail="Dette non trouvée")
+    
+    target = datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else None
+    db_debt.project_id = project_id
+    db_debt.title = title
+    db_debt.category = category
+    db_debt.impact = impact
+    db_debt.cost_days = cost_days
+    db_debt.assignee = assignee if assignee else None
+    db_debt.target_date = target
+    
+    db.commit()
+    return {"message": "Dette mise à jour avec succès"}
+
+@app.delete("/api/debts/{debt_id}")
+def delete_debt_endpoint(debt_id: int, db: Session = Depends(get_db)):
+    db_debt = db.query(TechDebtModel).filter(TechDebtModel.id == debt_id).first()
+    if not db_debt:
+        raise HTTPException(status_code=404, detail="Dette non trouvée")
+    db.delete(db_debt)
+    db.commit()
+    return {"message": "Dette supprimée"}
+
 @app.patch("/api/debts/{debt_id}/status")
 def update_debt_status(debt_id: int, status: str, db: Session = Depends(get_db)):
     db_debt = db.query(TechDebtModel).filter(TechDebtModel.id == debt_id).first()
@@ -174,28 +184,13 @@ def read_root(db: Session = Depends(get_db)):
     
     project_options = "".join([f'<option value="{p.id}">{p.name}</option>' for p in projects])
     
-    # Tableau des Applications (au centre)
-    projects_rows = ""
-    for p in projects:
-        p_desc = p.description or "Aucune description"
-        projects_rows += f"""
-        <tr class="border-b hover:bg-slate-50">
-            <td class="p-3 font-semibold text-slate-800">{p.name}</td>
-            <td class="p-3 text-xs text-slate-500">{p_desc}</td>
-            <td class="p-3 text-right space-x-1">
-                <button onclick="openEditProject({p.id}, '{p.name}', `{p_desc}`)" class="px-2 py-1 bg-amber-50 text-amber-700 rounded text-xs border border-amber-200 hover:bg-amber-100">Modifier</button>
-                <button onclick="deleteProject({p.id})" class="px-2 py-1 bg-rose-50 text-rose-700 rounded text-xs border border-rose-200 hover:bg-rose-100">Supprimer</button>
-            </td>
-        </tr>
-        """
-    if not projects:
-        projects_rows = '<tr><td colspan="3" class="p-6 text-center text-slate-400">Aucune application enregistrée.</td></tr>'
-
-    # Tableau des Dettes (au centre)
+    # Tableau des Dettes avec colonnes Modifier / Supprimer
     debts_rows = ""
     for d in debts:
         p_name = d.project.name if d.project else "Inconnu"
         badge_color = "bg-rose-100 text-rose-700" if d.impact == "Élevé" else ("bg-amber-100 text-amber-700" if d.impact == "Moyen" else "bg-emerald-100 text-emerald-700")
+        target_date_str = d.target_date.strftime("%Y-%m-%d") if d.target_date else ""
+        
         debts_rows += f"""
         <tr class="border-b hover:bg-slate-50">
             <td class="p-3">
@@ -217,10 +212,14 @@ def read_root(db: Session = Depends(get_db)):
                     <option value="Résolue" {'selected' if d.status == 'Résolue' else ''}>Résolue</option>
                 </select>
             </td>
+            <td class="p-3 text-right space-x-1">
+                <button onclick="openEditDebt({d.id}, {d.project_id}, `{d.title}`, `{d.category}`, `{d.impact}`, {d.cost_days}, `{d.assignee or ''}`, `{target_date_str}`)" class="px-2 py-1 bg-amber-50 text-amber-700 rounded text-xs border border-amber-200 hover:bg-amber-100">Modifier</button>
+                <button onclick="deleteDebt({d.id})" class="px-2 py-1 bg-rose-50 text-rose-700 rounded text-xs border border-rose-200 hover:bg-rose-100">Supprimer</button>
+            </td>
         </tr>
         """
     if not debts:
-        debts_rows = '<tr><td colspan="4" class="p-8 text-center text-slate-400">Aucune dette enregistrée pour le moment.</td></tr>'
+        debts_rows = '<tr><td colspan="5" class="p-8 text-center text-slate-400">Aucune dette enregistrée pour le moment.</td></tr>'
 
     # Planning
     sorted_debts = sorted(debts, key=lambda x: x.target_date if x.target_date else date.max)
@@ -287,17 +286,13 @@ def read_root(db: Session = Depends(get_db)):
         <!-- ONGLET 1 : REGISTRE ET SAISIE -->
         <div id="tab-register" class="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <div class="space-y-6">
-                <!-- Formulaire Ajouter/Modifier Application -->
+                <!-- Ajouter Application -->
                 <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                    <h2 id="project-form-title" class="text-lg font-semibold text-slate-700 mb-4">📂 Ajouter une Application</h2>
-                    <form onsubmit="event.preventDefault(); saveProject(this);" class="space-y-4">
-                        <input type="hidden" id="project_id" name="project_id" value="" />
-                        <input name="name" id="project_name" type="text" placeholder="Nom de l'application" class="w-full border p-2 rounded text-sm" required />
-                        <textarea name="description" id="project_desc" placeholder="Courte description..." class="w-full border p-2 rounded text-sm" rows="2"></textarea>
-                        <div class="flex gap-2">
-                            <button type="submit" id="project-submit-btn" class="flex-1 bg-slate-800 text-white py-2 rounded text-sm font-medium hover:bg-slate-700">Enregistrer</button>
-                            <button type="button" id="project-cancel-btn" onclick="resetProjectForm()" class="hidden px-3 bg-slate-200 text-slate-700 rounded text-sm font-medium hover:bg-slate-300">Annuler</button>
-                        </div>
+                    <h2 class="text-lg font-semibold text-slate-700 mb-4">📂 Ajouter une Application</h2>
+                    <form onsubmit="event.preventDefault(); createProject(this);" class="space-y-4">
+                        <input name="name" type="text" placeholder="Nom de l'application" class="w-full border p-2 rounded text-sm" required />
+                        <textarea name="description" placeholder="Courte description..." class="w-full border p-2 rounded text-sm" rows="2"></textarea>
+                        <button type="submit" class="w-full bg-slate-800 text-white py-2 rounded text-sm font-medium hover:bg-slate-700">Enregistrer l'App</button>
                     </form>
                 </div>
 
@@ -312,25 +307,26 @@ def read_root(db: Session = Depends(get_db)):
                     <p id="importMessage" class="text-xs mt-3 font-medium text-emerald-600"></p>
                 </div>
 
-                <!-- Déclarer une Dette -->
+                <!-- Formulaire Déclarer / Modifier une Dette -->
                 <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                    <h2 class="text-lg font-semibold text-slate-700 mb-4">⚠️ Déclarer une Dette</h2>
-                    <form onsubmit="event.preventDefault(); createDebt(this);" class="space-y-4">
-                        <select name="project_id" class="w-full border p-2 rounded text-sm" required>
+                    <h2 id="debt-form-title" class="text-lg font-semibold text-slate-700 mb-4">⚠️ Déclarer une Dette</h2>
+                    <form onsubmit="event.preventDefault(); saveDebt(this);" class="space-y-4">
+                        <input type="hidden" id="debt_id" name="debt_id" value="" />
+                        <select name="project_id" id="debt_project_id" class="w-full border p-2 rounded text-sm" required>
                             <option disabled selected value="">Sélectionner une application</option>
                             PROJECT_OPTIONS_PLACEHOLDER
                         </select>
-                        <input name="title" type="text" placeholder="Intitulé de la dette" class="w-full border p-2 rounded text-sm" required />
+                        <input name="title" id="debt_title" type="text" placeholder="Intitulé de la dette" class="w-full border p-2 rounded text-sm" required />
                         
                         <div class="grid grid-cols-2 gap-2">
-                            <select name="category" class="border p-2 rounded text-sm">
+                            <select name="category" id="debt_category" class="border p-2 rounded text-sm">
                                 <option value="Code">Code Legacy</option>
                                 <option value="Architecture">Architecture</option>
                                 <option value="Sécurité">Sécurité</option>
                                 <option value="Documentation">Documentation</option>
                                 <option value="Tests">Manque de tests</option>
                             </select>
-                            <select name="impact" class="border p-2 rounded text-sm">
+                            <select name="impact" id="debt_impact" class="border p-2 rounded text-sm">
                                 <option value="Faible">Impact Faible</option>
                                 <option value="Moyen" selected>Impact Moyen</option>
                                 <option value="Élevé">Impact Élevé</option>
@@ -338,42 +334,25 @@ def read_root(db: Session = Depends(get_db)):
                         </div>
 
                         <div class="grid grid-cols-2 gap-2">
-                            <input name="cost_days" type="number" placeholder="Coût (jours)" class="border p-2 rounded text-sm" required />
-                            <input name="assignee" type="text" placeholder="Responsable" class="border p-2 rounded text-sm" />
+                            <input name="cost_days" id="debt_cost_days" type="number" placeholder="Coût (jours)" class="border p-2 rounded text-sm" required />
+                            <input name="assignee" id="debt_assignee" type="text" placeholder="Responsable" class="border p-2 rounded text-sm" />
                         </div>
 
                         <div>
                             <label class="block text-xs text-slate-500 mb-1">Date cible de résolution :</label>
-                            <input name="target_date" type="date" class="w-full border p-2 rounded text-sm" />
+                            <input name="target_date" id="debt_target_date" type="date" class="w-full border p-2 rounded text-sm" />
                         </div>
 
-                        <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded text-sm font-medium hover:bg-blue-700">Ajouter la dette</button>
+                        <div class="flex gap-2">
+                            <button type="submit" id="debt-submit-btn" class="flex-1 bg-blue-600 text-white py-2 rounded text-sm font-medium hover:bg-blue-700">Ajouter la dette</button>
+                            <button type="button" id="debt-cancel-btn" onclick="resetDebtForm()" class="hidden px-3 bg-slate-200 text-slate-700 rounded text-sm font-medium hover:bg-slate-300">Annuler</button>
+                        </div>
                     </form>
                 </div>
             </div>
 
-            <!-- Colonne Centrale : Registres (Applications & Dettes) -->
+            <!-- Registre des Dettes (Tableau) -->
             <div class="lg:col-span-2 space-y-6">
-                <!-- Registre des Applications -->
-                <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                    <h2 class="text-lg font-semibold text-slate-700 mb-4">📂 Registre des Applications</h2>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left border-collapse text-sm">
-                            <thead>
-                                <tr class="bg-slate-50 border-b text-slate-500">
-                                    <th class="p-3">Nom</th>
-                                    <th class="p-3">Description</th>
-                                    <th class="p-3 text-right">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                PROJECTS_ROWS_PLACEHOLDER
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <!-- Registre des Dettes -->
                 <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                     <h2 class="text-lg font-semibold text-slate-700 mb-4">📋 Registre des Dettes Techniques</h2>
                     <div class="overflow-x-auto">
@@ -384,6 +363,7 @@ def read_root(db: Session = Depends(get_db)):
                                     <th class="p-3">Catégorie / Impact</th>
                                     <th class="p-3">Charge & Resp.</th>
                                     <th class="p-3">Statut</th>
+                                    <th class="p-3 text-right">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -426,72 +406,85 @@ def read_root(db: Session = Depends(get_db)):
             }
         }
 
-        function openEditProject(id, name, desc) {
-            document.getElementById('project_id').value = id;
-            document.getElementById('project_name').value = name;
-            document.getElementById('project_desc').value = desc === 'Aucune description' ? '' : desc;
-            document.getElementById('project-form-title').innerText = "✏️ Modifier l'Application";
-            document.getElementById('project-submit-btn').innerText = "Mettre à jour";
-            document.getElementById('project-cancel-btn').classList.remove('hidden');
+        function openEditDebt(id, projectId, title, category, impact, costDays, assignee, targetDate) {
+            document.getElementById('debt_id').value = id;
+            document.getElementById('debt_project_id').value = projectId;
+            document.getElementById('debt_title').value = title;
+            document.getElementById('debt_category').value = category;
+            document.getElementById('debt_impact').value = impact;
+            document.getElementById('debt_cost_days').value = costDays;
+            document.getElementById('debt_assignee').value = assignee === 'Non assigné' ? '' : assignee;
+            document.getElementById('debt_target_date').value = targetDate;
+
+            document.getElementById('debt-form-title').innerText = "✏️ Modifier la Dette";
+            document.getElementById('debt-submit-btn').innerText = "Mettre à jour";
+            document.getElementById('debt-cancel-btn').classList.remove('hidden');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
         }
 
-        function resetProjectForm() {
-            document.getElementById('project_id').value = '';
-            document.getElementById('project_name').value = '';
-            document.getElementById('project_desc').value = '';
-            document.getElementById('project-form-title').innerText = "📂 Ajouter une Application";
-            document.getElementById('project-submit-btn').innerText = "Enregistrer";
-            document.getElementById('project-cancel-btn').classList.add('hidden');
+        function resetDebtForm() {
+            document.getElementById('debt_id').value = '';
+            document.getElementById('debt_project_id').value = '';
+            document.getElementById('debt_title').value = '';
+            document.getElementById('debt_category').value = 'Code';
+            document.getElementById('debt_impact').value = 'Moyen';
+            document.getElementById('debt_cost_days').value = '';
+            document.getElementById('debt_assignee').value = '';
+            document.getElementById('debt_target_date').value = '';
+
+            document.getElementById('debt-form-title').innerText = "⚠️ Déclarer une Dette";
+            document.getElementById('debt-submit-btn').innerText = "Ajouter la dette";
+            document.getElementById('debt-cancel-btn').classList.add('hidden');
         }
 
-        async function saveProject(form) {
-            const id = document.getElementById('project_id').value;
-            const name = document.getElementById('project_name').value;
-            const description = document.getElementById('project_desc').value;
-
-            let url = `/api/projects?name=${encodeURIComponent(name)}&description=${encodeURIComponent(description)}`;
-            let method = 'POST';
-
-            if (id) {
-                url = `/api/projects/${id}?name=${encodeURIComponent(name)}&description=${encodeURIComponent(description)}`;
-                method = 'PUT';
-            }
-
-            const res = await fetch(url, { method: method });
-            if (res.ok) {
-                window.location.reload();
-            } else {
-                const err = await res.json();
-                alert("Erreur : " + err.detail);
-            }
-        }
-
-        async function deleteProject(id) {
-            if (!confirm("Voulez-vous vraiment supprimer cette application ? (Attention : cela supprimera aussi toutes les dettes associées)")) return;
-
-            const res = await fetch(`/api/projects/${id}`, { method: 'DELETE' });
-            if (res.ok) {
-                window.location.reload();
-            } else {
-                const err = await res.json();
-                alert("Erreur : " + err.detail);
-            }
-        }
-
-        async function createDebt(form) {
+        async function createProject(form) {
             const formData = new FormData(form);
-            const params = new URLSearchParams();
-            for (const pair of formData.entries()) {
-                params.append(pair[0], pair[1]);
-            }
-
-            const res = await fetch(`/api/debts?${params.toString()}`, {
+            const res = await fetch(`/api/projects?name=${encodeURIComponent(formData.get('name'))}&description=${encodeURIComponent(formData.get('description'))}`, {
                 method: 'POST'
             });
             if (res.ok) {
                 window.location.reload();
             } else {
-                alert("Erreur lors de l'ajout de la dette");
+                const err = await res.json();
+                alert("Erreur : " + err.detail);
+            }
+        }
+
+        async function saveDebt(form) {
+            const id = document.getElementById('debt_id').value;
+            const formData = new FormData(form);
+            const params = new URLSearchParams();
+            for (const pair of formData.entries()) {
+                if (pair[0] !== 'debt_id') {
+                    params.append(pair[0], pair[1]);
+                }
+            }
+
+            let url = `/api/debts?${params.toString()}`;
+            let method = 'POST';
+
+            if (id) {
+                url = `/api/debts/${id}?${params.toString()}`;
+                method = 'PUT';
+            }
+
+            const res = await fetch(url, { method: method });
+            if (res.ok) {
+                resetDebtForm();
+                window.location.reload();
+            } else {
+                alert("Erreur lors de l'enregistrement de la dette");
+            }
+        }
+
+        async function deleteDebt(id) {
+            if (!confirm("Voulez-vous vraiment supprimer cette dette ?")) return;
+
+            const res = await fetch(`/api/debts/${id}`, { method: 'DELETE' });
+            if (res.ok) {
+                window.location.reload();
+            } else {
+                alert("Erreur lors de la suppression");
             }
         }
 
@@ -534,7 +527,6 @@ def read_root(db: Session = Depends(get_db)):
     html_content = html_content.replace("DEBTS_COUNT_PLACEHOLDER", str(len(debts)))
     html_content = html_content.replace("TOTAL_COST_PLACEHOLDER", str(total_cost))
     html_content = html_content.replace("PROJECT_OPTIONS_PLACEHOLDER", project_options)
-    html_content = html_content.replace("PROJECTS_ROWS_PLACEHOLDER", projects_rows)
     html_content = html_content.replace("DEBTS_ROWS_PLACEHOLDER", debts_rows)
     html_content = html_content.replace("PLANNING_CARDS_PLACEHOLDER", planning_cards)
 
