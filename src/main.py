@@ -76,7 +76,6 @@ def update_project_endpoint(project_id: int, name: str, description: str = "", d
     if not name.strip():
         raise HTTPException(status_code=400, detail="Le nom du projet est requis")
     
-    # Vérifier si le nouveau nom existe déjà pour un autre projet
     existing = db.query(ProjectModel).filter(ProjectModel.name == name.strip(), ProjectModel.id != project_id).first()
     if existing:
         raise HTTPException(status_code=400, detail="Une autre application porte déjà ce nom")
@@ -173,29 +172,26 @@ def read_root(db: Session = Depends(get_db)):
     debts = db.query(TechDebtModel).all()
     total_cost = sum(d.cost_days for d in debts)
     
-    # Options de projets pour le formulaire de dette
     project_options = "".join([f'<option value="{p.id}">{p.name}</option>' for p in projects])
     
-    # Liste des applications pour modification/gestion
-    projects_list_html = ""
+    # Tableau des Applications (au centre)
+    projects_rows = ""
     for p in projects:
         p_desc = p.description or "Aucune description"
-        projects_list_html += f"""
-        <div class="p-3 border rounded-lg bg-slate-50 flex justify-between items-center text-sm">
-            <div>
-                <div class="font-bold text-slate-800">{p.name}</div>
-                <div class="text-xs text-slate-500">{p_desc}</div>
-            </div>
-            <div class="flex gap-2">
+        projects_rows += f"""
+        <tr class="border-b hover:bg-slate-50">
+            <td class="p-3 font-semibold text-slate-800">{p.name}</td>
+            <td class="p-3 text-xs text-slate-500">{p_desc}</td>
+            <td class="p-3 text-right space-x-1">
                 <button onclick="openEditProject({p.id}, '{p.name}', `{p_desc}`)" class="px-2 py-1 bg-amber-50 text-amber-700 rounded text-xs border border-amber-200 hover:bg-amber-100">Modifier</button>
                 <button onclick="deleteProject({p.id})" class="px-2 py-1 bg-rose-50 text-rose-700 rounded text-xs border border-rose-200 hover:bg-rose-100">Supprimer</button>
-            </div>
-        </div>
+            </td>
+        </tr>
         """
     if not projects:
-        projects_list_html = '<div class="text-xs text-slate-400 text-center py-2">Aucune application enregistrée.</div>'
+        projects_rows = '<tr><td colspan="3" class="p-6 text-center text-slate-400">Aucune application enregistrée.</td></tr>'
 
-    # Construction du tableau des dettes (Registre)
+    # Tableau des Dettes (au centre)
     debts_rows = ""
     for d in debts:
         p_name = d.project.name if d.project else "Inconnu"
@@ -226,7 +222,7 @@ def read_root(db: Session = Depends(get_db)):
     if not debts:
         debts_rows = '<tr><td colspan="4" class="p-8 text-center text-slate-400">Aucune dette enregistrée pour le moment.</td></tr>'
 
-    # Construction du Planning (trié par date cible)
+    # Planning
     sorted_debts = sorted(debts, key=lambda x: x.target_date if x.target_date else date.max)
     planning_cards = ""
     for d in sorted_debts:
@@ -291,7 +287,7 @@ def read_root(db: Session = Depends(get_db)):
         <!-- ONGLET 1 : REGISTRE ET SAISIE -->
         <div id="tab-register" class="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <div class="space-y-6">
-                <!-- Ajouter / Modifier Application -->
+                <!-- Formulaire Ajouter/Modifier Application -->
                 <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                     <h2 id="project-form-title" class="text-lg font-semibold text-slate-700 mb-4">📂 Ajouter une Application</h2>
                     <form onsubmit="event.preventDefault(); saveProject(this);" class="space-y-4">
@@ -303,14 +299,6 @@ def read_root(db: Session = Depends(get_db)):
                             <button type="button" id="project-cancel-btn" onclick="resetProjectForm()" class="hidden px-3 bg-slate-200 text-slate-700 rounded text-sm font-medium hover:bg-slate-300">Annuler</button>
                         </div>
                     </form>
-
-                    <!-- Liste des applications existantes (pour modif/suppr) -->
-                    <div class="mt-6 pt-4 border-t space-y-2">
-                        <h3 class="text-xs font-bold uppercase text-slate-400 mb-2">Applications Existantes</h3>
-                        <div class="max-h-40 overflow-y-auto space-y-2 pr-1">
-                            PROJECTS_LIST_PLACEHOLDER
-                        </div>
-                    </div>
                 </div>
 
                 <!-- Import Excel / CSV -->
@@ -364,8 +352,28 @@ def read_root(db: Session = Depends(get_db)):
                 </div>
             </div>
 
-            <!-- Registre des Dettes (Tableau) -->
+            <!-- Colonne Centrale : Registres (Applications & Dettes) -->
             <div class="lg:col-span-2 space-y-6">
+                <!-- Registre des Applications -->
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                    <h2 class="text-lg font-semibold text-slate-700 mb-4">📂 Registre des Applications</h2>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse text-sm">
+                            <thead>
+                                <tr class="bg-slate-50 border-b text-slate-500">
+                                    <th class="p-3">Nom</th>
+                                    <th class="p-3">Description</th>
+                                    <th class="p-3 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                PROJECTS_ROWS_PLACEHOLDER
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Registre des Dettes -->
                 <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                     <h2 class="text-lg font-semibold text-slate-700 mb-4">📋 Registre des Dettes Techniques</h2>
                     <div class="overflow-x-auto">
@@ -526,7 +534,7 @@ def read_root(db: Session = Depends(get_db)):
     html_content = html_content.replace("DEBTS_COUNT_PLACEHOLDER", str(len(debts)))
     html_content = html_content.replace("TOTAL_COST_PLACEHOLDER", str(total_cost))
     html_content = html_content.replace("PROJECT_OPTIONS_PLACEHOLDER", project_options)
-    html_content = html_content.replace("PROJECTS_LIST_PLACEHOLDER", projects_list_html)
+    html_content = html_content.replace("PROJECTS_ROWS_PLACEHOLDER", projects_rows)
     html_content = html_content.replace("DEBTS_ROWS_PLACEHOLDER", debts_rows)
     html_content = html_content.replace("PLANNING_CARDS_PLACEHOLDER", planning_cards)
 
