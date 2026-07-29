@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from datetime import date, datetime, timedelta
@@ -9,7 +9,7 @@ import pandas as pd
 import io
 
 # Configuration de la base de données SQLite
-DATABASE_URL = "sqlite:///./tech_debt_v4.db"
+DATABASE_URL = "sqlite:///./tech_debt_v5.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -21,6 +21,7 @@ class ProjectModel(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
     description = Column(String)
+    is_pilot = Column(Boolean, default=False)
     
     debts = relationship("TechDebtModel", back_populates="project", cascade="all, delete-orphan")
 
@@ -33,6 +34,7 @@ class TechDebtModel(Base):
     cost_days = Column(Integer)
     status = Column(String, default="Ouverte")
     created_at = Column(Date, default=date.today)
+    start_date = Column(Date, nullable=True)
     target_date = Column(Date, nullable=True)
     assignee = Column(String, nullable=True)
     
@@ -55,14 +57,14 @@ def get_db():
 # --- API Endpoints : Projets ---
 
 @app.post("/api/projects")
-def create_project_endpoint(name: str, description: str = "", db: Session = Depends(get_db)):
+def create_project_endpoint(name: str, description: str = "", is_pilot: bool = False, db: Session = Depends(get_db)):
     if not name.strip():
         raise HTTPException(status_code=400, detail="Le nom du projet est requis")
     existing = db.query(ProjectModel).filter(ProjectModel.name == name.strip()).first()
     if existing:
         raise HTTPException(status_code=400, detail="Ce projet existe déjà")
     
-    db_project = ProjectModel(name=name.strip(), description=description.strip())
+    db_project = ProjectModel(name=name.strip(), description=description.strip(), is_pilot=is_pilot)
     db.add(db_project)
     db.commit()
     return {"message": "Projet créé avec succès"}
@@ -89,10 +91,16 @@ async def import_projects(file: UploadFile = File(...), db: Session = Depends(ge
             description = str(row.get('description', '')).strip()
             if description == 'nan':
                 description = ''
+            
+            is_pilot_val = False
+            if 'is_pilot' in df.columns:
+                val = str(row['is_pilot']).strip().lower()
+                if val in ['true', '1', 'oui', 'yes']:
+                    is_pilot_val = True
 
             existing = db.query(ProjectModel).filter(ProjectModel.name == name).first()
             if not existing:
-                db_project = ProjectModel(name=name, description=description)
+                db_project = ProjectModel(name=name, description=description, is_pilot=is_pilot_val)
                 db.add(db_project)
                 imported_count += 1
 
@@ -101,7 +109,7 @@ async def import_projects(file: UploadFile = File(...), db: Session = Depends(ge
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Erreur : {str(e)}")
 
-# --- API Endpoints : Dettes Techniques (CRUD complet) ---
+# --- API Endpoints : Dettes Techniques ---
 
 @app.post("/api/debts")
 def create_debt_endpoint(
@@ -111,9 +119,11 @@ def create_debt_endpoint(
     impact: str,
     cost_days: int,
     assignee: str = "",
+    start_date: str = "",
     target_date: str = "",
     db: Session = Depends(get_db)
 ):
+    start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
     target = datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else None
     db_debt = TechDebtModel(
         title=title,
@@ -121,6 +131,7 @@ def create_debt_endpoint(
         impact=impact,
         cost_days=cost_days,
         assignee=assignee if assignee else None,
+        start_date=start,
         target_date=target,
         project_id=project_id
     )
@@ -137,6 +148,7 @@ def update_debt_endpoint(
     impact: str,
     cost_days: int,
     assignee: str = "",
+    start_date: str = "",
     target_date: str = "",
     db: Session = Depends(get_db)
 ):
@@ -144,13 +156,16 @@ def update_debt_endpoint(
     if not db_debt:
         raise HTTPException(status_code=404, detail="Dette non trouvée")
     
+    start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
     target = datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else None
+    
     db_debt.project_id = project_id
     db_debt.title = title
     db_debt.category = category
     db_debt.impact = impact
     db_debt.cost_days = cost_days
     db_debt.assignee = assignee if assignee else None
+    db_debt.start_date = start
     db_debt.target_date = target
     
     db.commit()
@@ -182,20 +197,24 @@ def read_root(db: Session = Depends(get_db)):
     debts = db.query(TechDebtModel).all()
     total_cost = sum(d.cost_days for d in debts)
     
-    project_options = "".join([f'<option value="{p.id}">{p.name}</option>' for p in projects])
+    project_options = "".join([f'<option value="{p.id}">{p.name} {"(Pilote)" if p.is_pilot else ""}</option>' for p in projects])
     
     # Tableau des Dettes
     debts_rows = ""
     for d in debts:
         p_name = d.project.name if d.project else "Inconnu"
+        is_pilot = d.project.is_pilot if d.project else False
+        pilot_badge = '<span class="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-purple-100 text-purple-700 font-bold">Pilote</span>' if is_pilot else ''
+        
         badge_color = "bg-rose-100 text-rose-700" if d.impact == "Élevé" else ("bg-amber-100 text-amber-700" if d.impact == "Moyen" else "bg-emerald-100 text-emerald-700")
+        start_date_str = d.start_date.strftime("%Y-%m-%d") if d.start_date else ""
         target_date_str = d.target_date.strftime("%Y-%m-%d") if d.target_date else ""
         
         debts_rows += f"""
-        <tr class="border-b hover:bg-slate-50">
+        <tr class="border-b hover:bg-slate-50 debt-row" data-pilot="{str(is_pilot).lower()}">
             <td class="p-3">
                 <div class="font-semibold text-slate-800">{d.title}</div>
-                <div class="text-xs text-blue-600 font-medium">📦 {p_name}</div>
+                <div class="text-xs text-blue-600 font-medium">📦 {p_name} {pilot_badge}</div>
             </td>
             <td class="p-3">
                 <span class="inline-block px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700 mr-1">{d.category}</span>
@@ -213,7 +232,7 @@ def read_root(db: Session = Depends(get_db)):
                 </select>
             </td>
             <td class="p-3 text-right space-x-1">
-                <button onclick="openEditDebt({d.id}, {d.project_id}, `{d.title}`, `{d.category}`, `{d.impact}`, {d.cost_days}, `{d.assignee or ''}`, `{target_date_str}`)" class="px-2 py-1 bg-amber-50 text-amber-700 rounded text-xs border border-amber-200 hover:bg-amber-100">Modifier</button>
+                <button onclick="openEditDebt({d.id}, {d.project_id}, `{d.title}`, `{d.category}`, `{d.impact}`, {d.cost_days}, `{d.assignee or ''}`, `{start_date_str}`, `{target_date_str}`)" class="px-2 py-1 bg-amber-50 text-amber-700 rounded text-xs border border-amber-200 hover:bg-amber-100">Modifier</button>
                 <button onclick="deleteDebt({d.id})" class="px-2 py-1 bg-rose-50 text-rose-700 rounded text-xs border border-rose-200 hover:bg-rose-100">Supprimer</button>
             </td>
         </tr>
@@ -226,11 +245,10 @@ def read_root(db: Session = Depends(get_db)):
     planning_cards = ""
     gantt_rows = ""
     
-    # Calcul des bornes de dates pour le Gantt (min et max)
-    valid_dates = [d.target_date for d in debts if d.target_date]
+    valid_dates = [d.target_date for d in debts if d.target_date] + [d.start_date for d in debts if d.start_date]
     if valid_dates:
-        min_date = min(valid_dates) - timedelta(days=5)
-        max_date = max(valid_dates) + timedelta(days=10)
+        min_date = min(valid_dates) - timedelta(days=3)
+        max_date = max(valid_dates) + timedelta(days=7)
         total_days_span = (max_date - min_date).days or 1
     else:
         min_date = date.today()
@@ -239,9 +257,9 @@ def read_root(db: Session = Depends(get_db)):
 
     for d in sorted_debts:
         p_name = d.project.name if d.project else "Inconnu"
+        start_str = d.start_date.strftime("%Y-%m-%d") if d.start_date else "Non définie"
         target_str = d.target_date.strftime("%Y-%m-%d") if d.target_date else "Non planifiée"
         
-        # Liste (Planning classique)
         planning_cards += f"""
         <div class="p-4 border rounded-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-slate-50">
             <div class="space-y-1">
@@ -255,22 +273,20 @@ def read_root(db: Session = Depends(get_db)):
                     <span>Statut : <strong>{d.status}</strong></span>
                 </div>
             </div>
-            <div class="text-right">
-                <div class="text-xs text-slate-400">Échéance cible</div>
-                <div class="text-sm font-bold text-rose-600">{target_str}</div>
+            <div class="text-right text-xs">
+                <span class="text-slate-400">Du {start_str} au </span>
+                <span class="font-bold text-rose-600">{target_str}</span>
             </div>
         </div>
         """
 
         # Ligne Diagramme de Gantt
-        if d.target_date:
-            end_d = d.target_date
-            # On estime le début en reculant du nombre de jours de charge
-            start_d = end_d - timedelta(days=d.cost_days)
+        if d.target_date or d.start_date:
+            end_d = d.target_date if d.target_date else (d.start_date + timedelta(days=d.cost_days))
+            start_d = d.start_date if d.start_date else (end_d - timedelta(days=d.cost_days))
             if start_d < min_date:
                 start_d = min_date
             
-            # Calcul des pourcentages de positionnement CSS
             left_percent = max(0, min(100, ((start_d - min_date).days / total_days_span) * 100))
             duration_days = (end_d - start_d).days or 1
             width_percent = max(2, min(100 - left_percent, (duration_days / total_days_span) * 100))
@@ -285,7 +301,7 @@ def read_root(db: Session = Depends(get_db)):
                 <div class="w-3/4 relative h-6 bg-slate-100 rounded flex items-center">
                     <div style="left: {left_percent}%; width: {width_percent}%;" 
                          class="absolute h-4 {bar_color} rounded shadow-sm text-[10px] text-white px-1 flex items-center justify-between truncate"
-                         title="Charge: {d.cost_days}j | Cible: {target_str}">
+                         title="Début: {start_d.strftime('%Y-%m-%d')} | Fin: {end_d.strftime('%Y-%m-%d')} | Charge: {d.cost_days}j">
                         <span class="truncate">{d.cost_days}j</span>
                     </div>
                 </div>
@@ -312,7 +328,7 @@ def read_root(db: Session = Depends(get_db)):
                 <h1 class="text-2xl font-bold text-slate-800">🚀 TechDebt Manager Pro</h1>
                 <p class="text-sm text-slate-500">Suivi des applications, projets, planification et import Excel</p>
             </div>
-            <div class="flex gap-4">
+            <div class="flex gap-4 items-center">
                 <div class="text-right">
                     <p class="text-xs text-slate-400">Total Dettes</p>
                     <p class="text-xl font-bold text-blue-600">DEBTS_COUNT_PLACEHOLDER</p>
@@ -324,10 +340,19 @@ def read_root(db: Session = Depends(get_db)):
             </div>
         </header>
 
-        <!-- Navigation par onglets -->
-        <div class="flex gap-2 border-b pb-2">
-            <button onclick="switchTab('register')" id="btn-register" class="px-4 py-2 rounded font-medium text-sm bg-blue-600 text-white">Registre & Saisie</button>
-            <button onclick="switchTab('planning')" id="btn-planning" class="px-4 py-2 rounded font-medium text-sm bg-white text-slate-600 border">📅 Planning & Gantt</button>
+        <!-- Navigation par onglets & Filtres rapides -->
+        <div class="flex justify-between items-center border-b pb-2">
+            <div class="flex gap-2">
+                <button onclick="switchTab('register')" id="btn-register" class="px-4 py-2 rounded font-medium text-sm bg-blue-600 text-white">Registre & Saisie</button>
+                <button onclick="switchTab('planning')" id="btn-planning" class="px-4 py-2 rounded font-medium text-sm bg-white text-slate-600 border">📅 Planning & Gantt</button>
+            </div>
+            <div class="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border text-xs">
+                <label class="font-medium text-slate-600">Filtre :</label>
+                <select id="filterPilot" onchange="filterTable()" class="border rounded p-1 bg-slate-50 text-slate-700">
+                    <option value="all">Toutes les applications</option>
+                    <option value="pilot">Applications Pilotes uniquement</option>
+                </select>
+            </div>
         </div>
 
         <!-- ONGLET 1 : REGISTRE ET SAISIE -->
@@ -339,6 +364,10 @@ def read_root(db: Session = Depends(get_db)):
                     <form onsubmit="event.preventDefault(); createProject(this);" class="space-y-4">
                         <input name="name" type="text" placeholder="Nom de l'application" class="w-full border p-2 rounded text-sm" required />
                         <textarea name="description" placeholder="Courte description..." class="w-full border p-2 rounded text-sm" rows="2"></textarea>
+                        <div class="flex items-center gap-2">
+                            <input name="is_pilot" type="checkbox" id="is_pilot_checkbox" value="true" class="w-4 h-4 text-blue-600 rounded border-gray-300" />
+                            <label for="is_pilot_checkbox" class="text-xs font-medium text-slate-700">Définir comme application pilote</label>
+                        </div>
                         <button type="submit" class="w-full bg-slate-800 text-white py-2 rounded text-sm font-medium hover:bg-slate-700">Enregistrer l'App</button>
                     </form>
                 </div>
@@ -346,7 +375,7 @@ def read_root(db: Session = Depends(get_db)):
                 <!-- Import Excel / CSV -->
                 <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                     <h2 class="text-lg font-semibold text-slate-700 mb-2">📊 Importer depuis Excel / CSV</h2>
-                    <p class="text-xs text-slate-500 mb-4">Le fichier doit contenir une colonne <code class="bg-slate-100 p-0.5 rounded font-bold">name</code>.</p>
+                    <p class="text-xs text-slate-500 mb-4">Colonnes supportées : <code class="bg-slate-100 p-0.5 rounded font-bold">name</code>, <code class="bg-slate-100 p-0.5 rounded font-bold">description</code>, <code class="bg-slate-100 p-0.5 rounded font-bold">is_pilot</code> (true/false).</p>
                     <form onsubmit="event.preventDefault(); uploadFile();" class="space-y-4">
                         <input type="file" id="fileInput" accept=".xlsx, .xls, .csv" class="w-full text-sm border p-2 rounded file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700" required />
                         <button type="submit" class="w-full bg-emerald-600 text-white py-2 rounded text-sm font-medium hover:bg-emerald-700">Lancer l'import</button>
@@ -385,9 +414,15 @@ def read_root(db: Session = Depends(get_db)):
                             <input name="assignee" id="debt_assignee" type="text" placeholder="Responsable" class="border p-2 rounded text-sm" />
                         </div>
 
-                        <div>
-                            <label class="block text-xs text-slate-500 mb-1">Date cible de résolution :</label>
-                            <input name="target_date" id="debt_target_date" type="date" class="w-full border p-2 rounded text-sm" />
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="block text-[11px] text-slate-500 mb-1">Date début :</label>
+                                <input name="start_date" id="debt_start_date" type="date" class="w-full border p-2 rounded text-sm" />
+                            </div>
+                            <div>
+                                <label class="block text-[11px] text-slate-500 mb-1">Date cible :</label>
+                                <input name="target_date" id="debt_target_date" type="date" class="w-full border p-2 rounded text-sm" />
+                            </div>
                         </div>
 
                         <div class="flex gap-2">
@@ -413,7 +448,7 @@ def read_root(db: Session = Depends(get_db)):
                                     <th class="p-3 text-right">Actions</th>
                                 </tr>
                             </thead>
-                            <tbody>
+                            <tbody id="debtsTableBody">
                                 DEBTS_ROWS_PLACEHOLDER
                             </tbody>
                         </table>
@@ -470,7 +505,21 @@ def read_root(db: Session = Depends(get_db)):
             }
         }
 
-        function openEditDebt(id, projectId, title, category, impact, costDays, assignee, targetDate) {
+        function filterTable() {
+            const filterValue = document.getElementById('filterPilot').value;
+            const rows = document.querySelectorAll('.debt-row');
+            
+            rows.forEach(row => {
+                const isPilot = row.getAttribute('data-pilot') === 'true';
+                if (filterValue === 'pilot' && !isPilot) {
+                    row.style.display = 'none';
+                } else {
+                    row.style.display = '';
+                }
+            });
+        }
+
+        function openEditDebt(id, projectId, title, category, impact, costDays, assignee, startDate, targetDate) {
             document.getElementById('debt_id').value = id;
             document.getElementById('debt_project_id').value = projectId;
             document.getElementById('debt_title').value = title;
@@ -478,6 +527,7 @@ def read_root(db: Session = Depends(get_db)):
             document.getElementById('debt_impact').value = impact;
             document.getElementById('debt_cost_days').value = costDays;
             document.getElementById('debt_assignee').value = assignee === 'Non assigné' ? '' : assignee;
+            document.getElementById('debt_start_date').value = startDate;
             document.getElementById('debt_target_date').value = targetDate;
 
             document.getElementById('debt-form-title').innerText = "✏️ Modifier la Dette";
@@ -494,6 +544,7 @@ def read_root(db: Session = Depends(get_db)):
             document.getElementById('debt_impact').value = 'Moyen';
             document.getElementById('debt_cost_days').value = '';
             document.getElementById('debt_assignee').value = '';
+            document.getElementById('debt_start_date').value = '';
             document.getElementById('debt_target_date').value = '';
 
             document.getElementById('debt-form-title').innerText = "⚠️ Déclarer une Dette";
@@ -503,7 +554,8 @@ def read_root(db: Session = Depends(get_db)):
 
         async function createProject(form) {
             const formData = new FormData(form);
-            const res = await fetch(`/api/projects?name=${encodeURIComponent(formData.get('name'))}&description=${encodeURIComponent(formData.get('description'))}`, {
+            const isPilot = document.getElementById('is_pilot_checkbox').checked;
+            const res = await fetch(`/api/projects?name=${encodeURIComponent(formData.get('name'))}&description=${encodeURIComponent(formData.get('description'))}&is_pilot=${isPilot}`, {
                 method: 'POST'
             });
             if (res.ok) {
