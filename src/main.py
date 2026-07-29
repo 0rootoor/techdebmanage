@@ -1,13 +1,15 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from datetime import date, datetime
+import pandas as pd
+import io
 
 # Configuration de la base de données SQLite
-DATABASE_URL = "sqlite:///./tech_debt_v3.db"
+DATABASE_URL = "sqlite:///./tech_debt_v4.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -99,6 +101,43 @@ def create_project(project: ProjectCreate, db: Session = Depends(get_db)):
 @app.get("/api/projects", response_model=list[ProjectResponse])
 def get_projects(db: Session = Depends(get_db)):
     return db.query(ProjectModel).all()
+
+# --- Endpoint d'Import Excel / CSV ---
+
+@app.post("/api/projects/import")
+async def import_projects(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    contents = await file.read()
+    try:
+        if file.filename.endswith('.csv'):
+            df = pd.read_csv(io.BytesIO(contents))
+        elif file.filename.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(io.BytesIO(contents))
+        else:
+            raise HTTPException(status_code=400, detail="Format de fichier non supporté. Utilisez .csv ou .xlsx")
+
+        if 'name' not in df.columns:
+            raise HTTPException(status_code=400, detail="Le fichier doit contenir au moins une colonne nommée 'name'")
+
+        imported_count = 0
+        for _, row in df.iterrows():
+            name = str(row['name']).strip()
+            if not name or name == 'nan':
+                continue
+            
+            description = str(row.get('description', 'Importé depuis Excel')).strip()
+            if description == 'nan':
+                description = ''
+
+            existing = db.query(ProjectModel).filter(ProjectModel.name == name).first()
+            if not existing:
+                db_project = ProjectModel(name=name, description=description)
+                db.add(db_project)
+                imported_count += 1
+
+        db.commit()
+        return {"message": f"{imported_count} application(s) importée(s) avec succès !"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Erreur lors du traitement du fichier : {str(e)}")
 
 # --- API Endpoints : Dettes Techniques ---
 
@@ -192,7 +231,7 @@ def update_debt_status(debt_id: int, status: str, db: Session = Depends(get_db))
     db.commit()
     return {"message": "Statut mis à jour avec succès"}
 
-# --- Interface Frontend (Vue.js + Tailwind) ---
+# --- Interface Frontend ---
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
@@ -208,11 +247,10 @@ def read_root():
 <body class="bg-slate-100 min-h-screen p-6">
     <div id="app" class="max-w-6xl mx-auto space-y-8">
         
-        <!-- En-tête -->
         <header class="flex justify-between items-center bg-white p-6 rounded-xl shadow-sm border border-slate-200">
             <div>
                 <h1 class="text-2xl font-bold text-slate-800">🚀 TechDebt Manager Pro</h1>
-                <p class="text-sm text-slate-500">Suivi des applications, projets, planification et planning de la dette</p>
+                <p class="text-sm text-slate-500">Suivi des applications, projets, planification et import Excel</p>
             </div>
             <div class="flex gap-4">
                 <div class="text-right">
@@ -226,19 +264,13 @@ def read_root():
             </div>
         </header>
 
-        <!-- Navigation par onglets -->
         <div class="flex gap-2 border-b pb-2">
             <button @click="currentTab = 'register'" :class="{'px-4 py-2 rounded font-medium text-sm': true, 'bg-blue-600 text-white': currentTab === 'register', 'bg-white text-slate-600 border': currentTab !== 'register'}">Registre & Saisie</button>
             <button @click="currentTab = 'planning'" :class="{'px-4 py-2 rounded font-medium text-sm': true, 'bg-blue-600 text-white': currentTab === 'planning', 'bg-white text-slate-600 border': currentTab !== 'planning'}">📅 Planning & Échéances</button>
         </div>
 
-        <!-- ONGLET 1 : REGISTRE ET SAISIE -->
         <div v-if="currentTab === 'register'" class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            
-            <!-- Colonne de gauche : Formulaires -->
             <div class="space-y-6">
-                
-                <!-- Projet -->
                 <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                     <h2 class="text-lg font-semibold text-slate-700 mb-4">📂 Ajouter une Application</h2>
                     <form @submit.prevent="submitProject" class="space-y-4">
@@ -248,11 +280,18 @@ def read_root():
                     </form>
                 </div>
 
-                <!-- Dette (Création / Modification) -->
                 <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                    <h2 class="text-lg font-semibold text-slate-700 mb-4">
-                        {{ isEditing ? '✏️ Modifier la Dette' : '⚠️ Déclarer une Dette' }}
-                    </h2>
+                    <h2 class="text-lg font-semibold text-slate-700 mb-2">📊 Importer depuis Excel / CSV</h2>
+                    <p class="text-xs text-slate-500 mb-4">Le fichier doit contenir au moins une colonne <code class="bg-slate-100 p-0.5 rounded font-bold">name</code>.</p>
+                    <form @submit.prevent="submitImport" class="space-y-4">
+                        <input type="file" ref="fileInput" accept=".xlsx, .xls, .csv" class="w-full text-sm border p-2 rounded file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700" required />
+                        <button type="submit" class="w-full bg-emerald-600 text-white py-2 rounded text-sm font-medium hover:bg-emerald-700">Lancer l'import</button>
+                    </form>
+                    <p v-if="importMessage" class="text-xs mt-3 font-medium text-emerald-600">{{ importMessage }}</p>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                    <h2 class="text-lg font-semibold text-slate-700 mb-4">{{ isEditing ? '✏️ Modifier la Dette' : '⚠️ Déclarer une Dette' }}</h2>
                     <form @submit.prevent="submitDebt" class="space-y-4">
                         <select v-model="debtForm.project_id" class="w-full border p-2 rounded text-sm" required>
                             <option disabled value="">Sélectionner une application</option>
@@ -293,14 +332,11 @@ def read_root():
                         </div>
                     </form>
                 </div>
-
             </div>
 
-            <!-- Colonne de droite : Liste des dettes -->
             <div class="lg:col-span-2 space-y-6">
                 <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                     <h2 class="text-lg font-semibold text-slate-700 mb-4">📋 Registre des Dettes Techniques</h2>
-                    
                     <div class="overflow-x-auto">
                         <table class="w-full text-left border-collapse text-sm">
                             <thead>
@@ -350,14 +386,10 @@ def read_root():
                     </div>
                 </div>
             </div>
-
         </div>
 
-        <!-- ONGLET 2 : PLANNING DE GESTION DE DETTE -->
         <div v-if="currentTab === 'planning'" class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-6">
             <h2 class="text-lg font-semibold text-slate-700">📅 Planning de Résolution (Trié par Date Cible)</h2>
-            <p class="text-sm text-slate-500">Vue chronologique des actions de refactoring planifiées.</p>
-
             <div class="space-y-4">
                 <div v-for="debt in sortedDebtsByDate" :key="debt.id" class="p-4 border rounded-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-slate-50">
                     <div class="space-y-1">
@@ -391,6 +423,8 @@ def read_root():
                 const debts = ref([]);
                 const isEditing = ref(false);
                 const editingId = ref(null);
+                const importMessage = ref('');
+                const fileInput = ref(null);
 
                 const projectForm = ref({ name: '', description: '' });
                 const debtForm = ref({ title: '', category: 'Code', impact: 'Moyen', cost_days: '', target_date: '', assignee: '', project_id: '' });
@@ -413,6 +447,31 @@ def read_root():
                     projectForm.value.name = '';
                     projectForm.value.description = '';
                     fetchData();
+                };
+
+                const submitImport = async () => {
+                    const file = fileInput.value.files[0];
+                    if (!file) return;
+
+                    const formData = new FormData();
+                    formData.append('file', file);
+
+                    try {
+                        const res = await fetch('/api/projects/import', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                            importMessage.value = data.message;
+                            fetchData();
+                            fileInput.value.value = '';
+                        } else {
+                            importMessage.value = 'Erreur : ' + data.detail;
+                        }
+                    } catch (err) {
+                        importMessage.value = 'Erreur réseau lors de l\'importation.';
+                    }
                 };
 
                 const submitDebt = async () => {
@@ -474,8 +533,8 @@ def read_root():
 
                 return { 
                     currentTab, projects, debts, projectForm, debtForm, 
-                    isEditing, submitProject, submitDebt, startEdit, cancelEdit, 
-                    updateStatus, totalCost, sortedDebtsByDate 
+                    isEditing, submitProject, submitImport, submitDebt, startEdit, cancelEdit, 
+                    updateStatus, totalCost, sortedDebtsByDate, importMessage, fileInput 
                 };
             }
         }).mount('#app');
