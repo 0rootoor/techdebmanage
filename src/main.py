@@ -9,7 +9,7 @@ import pandas as pd
 import io
 
 # Configuration de la base de données SQLite
-DATABASE_URL = "sqlite:///./tech_debt_v5.db"
+DATABASE_URL = "sqlite:///./tech_debt_v6.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -257,6 +257,7 @@ def read_root(db: Session = Depends(get_db)):
 
     for d in sorted_debts:
         p_name = d.project.name if d.project else "Inconnu"
+        is_pilot = d.project.is_pilot if d.project else False
         start_str = d.start_date.strftime("%Y-%m-%d") if d.start_date else "Non définie"
         target_str = d.target_date.strftime("%Y-%m-%d") if d.target_date else "Non planifiée"
         
@@ -265,6 +266,7 @@ def read_root(db: Session = Depends(get_db)):
             <div class="space-y-1">
                 <div class="flex items-center gap-2">
                     <span class="text-xs font-bold px-2 py-0.5 bg-blue-100 text-blue-700 rounded">{p_name}</span>
+                    { '<span class="text-[10px] bg-purple-100 text-purple-700 font-bold px-1.5 py-0.5 rounded">Pilote</span>' if is_pilot else '' }
                     <span class="text-sm font-bold text-slate-800">{d.title}</span>
                 </div>
                 <div class="text-xs text-slate-500 flex gap-4">
@@ -291,17 +293,21 @@ def read_root(db: Session = Depends(get_db)):
             duration_days = (end_d - start_d).days or 1
             width_percent = max(2, min(100 - left_percent, (duration_days / total_days_span) * 100))
             
-            bar_color = "bg-emerald-500" if d.status == "Résolue" else ("bg-blue-500" if d.status == "En cours" else "bg-indigo-500")
+            # Application de la couleur spécifique pour les applications pilotes
+            if is_pilot:
+                bar_color = "bg-purple-600"
+            else:
+                bar_color = "bg-emerald-500" if d.status == "Résolue" else ("bg-blue-500" if d.status == "En cours" else "bg-indigo-500")
             
             gantt_rows += f"""
             <div class="flex items-center py-2 border-b border-slate-100 text-xs">
                 <div class="w-1/4 truncate font-medium text-slate-700 pr-2" title="{d.title} ({p_name})">
-                    <span class="text-blue-600 font-semibold">[{p_name}]</span> {d.title}
+                    <span class="{'text-purple-600 font-bold' if is_pilot else 'text-blue-600 font-semibold'}">[{p_name}{' 🎯' if is_pilot else ''}]</span> {d.title}
                 </div>
                 <div class="w-3/4 relative h-6 bg-slate-100 rounded flex items-center">
                     <div style="left: {left_percent}%; width: {width_percent}%;" 
                          class="absolute h-4 {bar_color} rounded shadow-sm text-[10px] text-white px-1 flex items-center justify-between truncate"
-                         title="Début: {start_d.strftime('%Y-%m-%d')} | Fin: {end_d.strftime('%Y-%m-%d')} | Charge: {d.cost_days}j">
+                         title="{'[PILOTE] ' if is_pilot else ''}Début: {start_d.strftime('%Y-%m-%d')} | Fin: {end_d.strftime('%Y-%m-%d')} | Charge: {d.cost_days}j">
                         <span class="truncate">{d.cost_days}j</span>
                     </div>
                 </div>
@@ -463,7 +469,8 @@ def read_root(db: Session = Depends(get_db)):
             <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
                 <div class="flex justify-between items-center">
                     <h2 class="text-lg font-semibold text-slate-700">📊 Diagramme de Gantt (Planification)</h2>
-                    <div class="flex gap-3 text-xs">
+                    <div class="flex flex-wrap gap-3 text-xs">
+                        <span class="flex items-center gap-1"><span class="w-3 h-3 bg-purple-600 rounded inline-block"></span> App Pilote</span>
                         <span class="flex items-center gap-1"><span class="w-3 h-3 bg-indigo-500 rounded inline-block"></span> Ouverte</span>
                         <span class="flex items-center gap-1"><span class="w-3 h-3 bg-blue-500 rounded inline-block"></span> En cours</span>
                         <span class="flex items-center gap-1"><span class="w-3 h-3 bg-emerald-500 rounded inline-block"></span> Résolue</span>
