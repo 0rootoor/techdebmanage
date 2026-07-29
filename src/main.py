@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date, Boolean, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from datetime import date, datetime, timedelta
@@ -9,7 +9,7 @@ import pandas as pd
 import io
 
 # Configuration de la base de données SQLite
-DATABASE_URL = "sqlite:///./tech_debt_v6.db"
+DATABASE_URL = "sqlite:///./tech_debt_v7.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -58,13 +58,16 @@ def get_db():
 
 @app.post("/api/projects")
 def create_project_endpoint(name: str, description: str = "", is_pilot: bool = False, db: Session = Depends(get_db)):
-    if not name.strip():
+    clean_name = name.strip()
+    if not clean_name:
         raise HTTPException(status_code=400, detail="Le nom du projet est requis")
-    existing = db.query(ProjectModel).filter(ProjectModel.name == name.strip()).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Ce projet existe déjà")
     
-    db_project = ProjectModel(name=name.strip(), description=description.strip(), is_pilot=is_pilot)
+    # Vérification insensible à la casse pour éviter les doublons type "MonApp" et "monapp"
+    existing = db.query(ProjectModel).filter(func.lower(ProjectModel.name) == clean_name.lower()).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Une application nommée '{existing.name}' existe déjà !")
+    
+    db_project = ProjectModel(name=clean_name, description=description.strip(), is_pilot=is_pilot)
     db.add(db_project)
     db.commit()
     return {"message": "Projet créé avec succès"}
@@ -86,10 +89,10 @@ async def import_projects(file: UploadFile = File(...), db: Session = Depends(ge
         imported_count = 0
         for _, row in df.iterrows():
             name = str(row['name']).strip()
-            if not name or name == 'nan':
+            if not name or name.lower() == 'nan':
                 continue
             description = str(row.get('description', '')).strip()
-            if description == 'nan':
+            if description.lower() == 'nan':
                 description = ''
             
             is_pilot_val = False
@@ -98,7 +101,8 @@ async def import_projects(file: UploadFile = File(...), db: Session = Depends(ge
                 if val in ['true', '1', 'oui', 'yes']:
                     is_pilot_val = True
 
-            existing = db.query(ProjectModel).filter(ProjectModel.name == name).first()
+            # Vérification unicité (insensible à la casse)
+            existing = db.query(ProjectModel).filter(func.lower(ProjectModel.name) == name.lower()).first()
             if not existing:
                 db_project = ProjectModel(name=name, description=description, is_pilot=is_pilot_val)
                 db.add(db_project)
@@ -293,7 +297,6 @@ def read_root(db: Session = Depends(get_db)):
             duration_days = (end_d - start_d).days or 1
             width_percent = max(2, min(100 - left_percent, (duration_days / total_days_span) * 100))
             
-            # Application de la couleur spécifique pour les applications pilotes
             if is_pilot:
                 bar_color = "bg-purple-600"
             else:
@@ -376,6 +379,7 @@ def read_root(db: Session = Depends(get_db)):
                         </div>
                         <button type="submit" class="w-full bg-slate-800 text-white py-2 rounded text-sm font-medium hover:bg-slate-700">Enregistrer l'App</button>
                     </form>
+                    <p id="projectMessage" class="text-xs mt-3 font-medium"></p>
                 </div>
 
                 <!-- Import Excel / CSV -->
@@ -562,14 +566,18 @@ def read_root(db: Session = Depends(get_db)):
         async function createProject(form) {
             const formData = new FormData(form);
             const isPilot = document.getElementById('is_pilot_checkbox').checked;
+            const msgEl = document.getElementById('projectMessage');
+            
             const res = await fetch(`/api/projects?name=${encodeURIComponent(formData.get('name'))}&description=${encodeURIComponent(formData.get('description'))}&is_pilot=${isPilot}`, {
                 method: 'POST'
             });
+            
             if (res.ok) {
                 window.location.reload();
             } else {
                 const err = await res.json();
-                alert("Erreur : " + err.detail);
+                msgEl.innerText = err.detail;
+                msgEl.className = 'text-xs mt-3 font-medium text-rose-600';
             }
         }
 
@@ -633,6 +641,7 @@ def read_root(db: Session = Depends(get_db)):
                 const data = await res.json();
                 if (res.ok) {
                     document.getElementById('importMessage').innerText = data.message;
+                    document.getElementById('importMessage').className = 'text-xs mt-3 font-medium text-emerald-600';
                     setTimeout(() => window.location.reload(), 1500);
                 } else {
                     document.getElementById('importMessage').innerText = 'Erreur : ' + data.detail;
@@ -640,6 +649,7 @@ def read_root(db: Session = Depends(get_db)):
                 }
             } catch (err) {
                 document.getElementById('importMessage').innerText = 'Erreur réseau.';
+                document.getElementById('importMessage').className = 'text-xs mt-3 font-medium text-rose-600';
             }
         }
     </script>
