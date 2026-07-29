@@ -52,7 +52,7 @@ def get_db():
     finally:
         db.close()
 
-# --- API Endpoints : Projets & Import ---
+# --- API Endpoints : Projets & Gestion ---
 
 @app.post("/api/projects")
 def create_project_endpoint(name: str, description: str = "", db: Session = Depends(get_db)):
@@ -66,6 +66,34 @@ def create_project_endpoint(name: str, description: str = "", db: Session = Depe
     db.add(db_project)
     db.commit()
     return {"message": "Projet créé avec succès"}
+
+@app.put("/api/projects/{project_id}")
+def update_project_endpoint(project_id: int, name: str, description: str = "", db: Session = Depends(get_db)):
+    db_project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="Application non trouvée")
+    
+    if not name.strip():
+        raise HTTPException(status_code=400, detail="Le nom du projet est requis")
+    
+    # Vérifier si le nouveau nom existe déjà pour un autre projet
+    existing = db.query(ProjectModel).filter(ProjectModel.name == name.strip(), ProjectModel.id != project_id).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Une autre application porte déjà ce nom")
+
+    db_project.name = name.strip()
+    db_project.description = description.strip()
+    db.commit()
+    return {"message": "Application mise à jour avec succès"}
+
+@app.delete("/api/projects/{project_id}")
+def delete_project_endpoint(project_id: int, db: Session = Depends(get_db)):
+    db_project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="Application non trouvée")
+    db.delete(db_project)
+    db.commit()
+    return {"message": "Application supprimée avec succès"}
 
 @app.post("/api/projects/import")
 async def import_projects(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -148,6 +176,25 @@ def read_root(db: Session = Depends(get_db)):
     # Options de projets pour le formulaire de dette
     project_options = "".join([f'<option value="{p.id}">{p.name}</option>' for p in projects])
     
+    # Liste des applications pour modification/gestion
+    projects_list_html = ""
+    for p in projects:
+        p_desc = p.description or "Aucune description"
+        projects_list_html += f"""
+        <div class="p-3 border rounded-lg bg-slate-50 flex justify-between items-center text-sm">
+            <div>
+                <div class="font-bold text-slate-800">{p.name}</div>
+                <div class="text-xs text-slate-500">{p_desc}</div>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="openEditProject({p.id}, '{p.name}', `{p_desc}`)" class="px-2 py-1 bg-amber-50 text-amber-700 rounded text-xs border border-amber-200 hover:bg-amber-100">Modifier</button>
+                <button onclick="deleteProject({p.id})" class="px-2 py-1 bg-rose-50 text-rose-700 rounded text-xs border border-rose-200 hover:bg-rose-100">Supprimer</button>
+            </div>
+        </div>
+        """
+    if not projects:
+        projects_list_html = '<div class="text-xs text-slate-400 text-center py-2">Aucune application enregistrée.</div>'
+
     # Construction du tableau des dettes (Registre)
     debts_rows = ""
     for d in debts:
@@ -244,14 +291,26 @@ def read_root(db: Session = Depends(get_db)):
         <!-- ONGLET 1 : REGISTRE ET SAISIE -->
         <div id="tab-register" class="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <div class="space-y-6">
-                <!-- Ajouter Application -->
+                <!-- Ajouter / Modifier Application -->
                 <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                    <h2 class="text-lg font-semibold text-slate-700 mb-4">📂 Ajouter une Application</h2>
-                    <form onsubmit="event.preventDefault(); createProject(this);" class="space-y-4">
-                        <input name="name" type="text" placeholder="Nom de l'application" class="w-full border p-2 rounded text-sm" required />
-                        <textarea name="description" placeholder="Courte description..." class="w-full border p-2 rounded text-sm" rows="2"></textarea>
-                        <button type="submit" class="w-full bg-slate-800 text-white py-2 rounded text-sm font-medium hover:bg-slate-700">Enregistrer l'App</button>
+                    <h2 id="project-form-title" class="text-lg font-semibold text-slate-700 mb-4">📂 Ajouter une Application</h2>
+                    <form onsubmit="event.preventDefault(); saveProject(this);" class="space-y-4">
+                        <input type="hidden" id="project_id" name="project_id" value="" />
+                        <input name="name" id="project_name" type="text" placeholder="Nom de l'application" class="w-full border p-2 rounded text-sm" required />
+                        <textarea name="description" id="project_desc" placeholder="Courte description..." class="w-full border p-2 rounded text-sm" rows="2"></textarea>
+                        <div class="flex gap-2">
+                            <button type="submit" id="project-submit-btn" class="flex-1 bg-slate-800 text-white py-2 rounded text-sm font-medium hover:bg-slate-700">Enregistrer</button>
+                            <button type="button" id="project-cancel-btn" onclick="resetProjectForm()" class="hidden px-3 bg-slate-200 text-slate-700 rounded text-sm font-medium hover:bg-slate-300">Annuler</button>
+                        </div>
                     </form>
+
+                    <!-- Liste des applications existantes (pour modif/suppr) -->
+                    <div class="mt-6 pt-4 border-t space-y-2">
+                        <h3 class="text-xs font-bold uppercase text-slate-400 mb-2">Applications Existantes</h3>
+                        <div class="max-h-40 overflow-y-auto space-y-2 pr-1">
+                            PROJECTS_LIST_PLACEHOLDER
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Import Excel / CSV -->
@@ -359,11 +418,50 @@ def read_root(db: Session = Depends(get_db)):
             }
         }
 
-        async function createProject(form) {
-            const formData = new FormData(form);
-            const res = await fetch(`/api/projects?name=${encodeURIComponent(formData.get('name'))}&description=${encodeURIComponent(formData.get('description'))}`, {
-                method: 'POST'
-            });
+        function openEditProject(id, name, desc) {
+            document.getElementById('project_id').value = id;
+            document.getElementById('project_name').value = name;
+            document.getElementById('project_desc').value = desc === 'Aucune description' ? '' : desc;
+            document.getElementById('project-form-title').innerText = "✏️ Modifier l'Application";
+            document.getElementById('project-submit-btn').innerText = "Mettre à jour";
+            document.getElementById('project-cancel-btn').classList.remove('hidden');
+        }
+
+        function resetProjectForm() {
+            document.getElementById('project_id').value = '';
+            document.getElementById('project_name').value = '';
+            document.getElementById('project_desc').value = '';
+            document.getElementById('project-form-title').innerText = "📂 Ajouter une Application";
+            document.getElementById('project-submit-btn').innerText = "Enregistrer";
+            document.getElementById('project-cancel-btn').classList.add('hidden');
+        }
+
+        async function saveProject(form) {
+            const id = document.getElementById('project_id').value;
+            const name = document.getElementById('project_name').value;
+            const description = document.getElementById('project_desc').value;
+
+            let url = `/api/projects?name=${encodeURIComponent(name)}&description=${encodeURIComponent(description)}`;
+            let method = 'POST';
+
+            if (id) {
+                url = `/api/projects/${id}?name=${encodeURIComponent(name)}&description=${encodeURIComponent(description)}`;
+                method = 'PUT';
+            }
+
+            const res = await fetch(url, { method: method });
+            if (res.ok) {
+                window.location.reload();
+            } else {
+                const err = await res.json();
+                alert("Erreur : " + err.detail);
+            }
+        }
+
+        async function deleteProject(id) {
+            if (!confirm("Voulez-vous vraiment supprimer cette application ? (Attention : cela supprimera aussi toutes les dettes associées)")) return;
+
+            const res = await fetch(`/api/projects/${id}`, { method: 'DELETE' });
             if (res.ok) {
                 window.location.reload();
             } else {
@@ -428,6 +526,7 @@ def read_root(db: Session = Depends(get_db)):
     html_content = html_content.replace("DEBTS_COUNT_PLACEHOLDER", str(len(debts)))
     html_content = html_content.replace("TOTAL_COST_PLACEHOLDER", str(total_cost))
     html_content = html_content.replace("PROJECT_OPTIONS_PLACEHOLDER", project_options)
+    html_content = html_content.replace("PROJECTS_LIST_PLACEHOLDER", projects_list_html)
     html_content = html_content.replace("DEBTS_ROWS_PLACEHOLDER", debts_rows)
     html_content = html_content.replace("PLANNING_CARDS_PLACEHOLDER", planning_cards)
 
