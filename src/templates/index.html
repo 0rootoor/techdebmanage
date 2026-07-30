@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
     <style>
         :root {
             --bp-navy: #0B2545;
@@ -1042,18 +1042,36 @@
     <script id="chart-data" type="application/json">{{ chart_data_json|safe }}</script>
     <script id="gantt-data" type="application/json">{{ gantt_data_json|safe }}</script>
     <script>
+        // Déclarées en tout premier pour ne jamais rester bloquées dans la zone
+        // morte temporelle si une ligne plus bas venait à lever une erreur
+        // (ex : Chart.js indisponible suite à un souci de CDN).
+        let chartsInitialized = false;
+        let ganttInitialized = false;
+
         const CHART_DATA = JSON.parse(document.getElementById('chart-data').textContent);
         const PALETTE = ['#1256A3', '#2E86DE', '#6FA8DC', '#0B2545', '#8FB8E8'];
 
-        Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
-        Chart.defaults.font.size = 12;
-        Chart.defaults.color = '#64748B';
+        // Chart.js est chargé depuis un CDN externe : si ce chargement échoue
+        // (réseau, CDN indisponible...), on ne doit pas casser le reste de la page
+        // (filtres, Gantt, édition...), donc on protège cet appel.
+        if (typeof Chart !== 'undefined') {
+            Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+            Chart.defaults.font.size = 12;
+            Chart.defaults.color = '#64748B';
+        } else {
+            console.error("Chart.js n'a pas pu être chargé depuis le CDN : les graphiques de l'onglet Statistiques ne s'afficheront pas, mais le reste de l'application fonctionne normalement.");
+        }
 
-        let chartsInitialized = false;
         function initCharts() {
             if (chartsInitialized) return;
             const catCanvas = document.getElementById('chartCategory');
             if (!catCanvas) return;
+            if (typeof Chart === 'undefined') {
+                catCanvas.closest('.chart-grid').innerHTML = `<div class="empty-state" style="grid-column:1/-1; color:var(--danger);">
+                    Impossible de charger la librairie de graphiques (Chart.js) depuis le CDN. Vérifie ta connexion internet ou ouvre la console du navigateur (F12) pour plus de détails.
+                </div>`;
+                return;
+            }
             chartsInitialized = true;
 
             new Chart(document.getElementById('chartCategory'), {
@@ -1172,7 +1190,6 @@
             return div.innerHTML;
         }
 
-        let ganttInitialized = false;
         function initGantt() {
             if (ganttInitialized) return;
             const container = document.getElementById('ganttContainer');
