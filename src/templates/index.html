@@ -98,7 +98,7 @@
         /* KPI cards */
         .kpi-grid {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(5, 1fr);
             gap: 14px;
             margin-bottom: 28px;
         }
@@ -348,6 +348,11 @@
             color: var(--danger);
         }
 
+        .pill-pilot {
+            background: var(--bp-navy);
+            color: white;
+        }
+
         select.status-select {
             font-size: 12px;
             padding: 5px 8px;
@@ -419,6 +424,142 @@
             font-size: 13.5px;
         }
 
+        /* Gantt */
+        .gantt-wrap {
+            overflow-x: auto;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: white;
+        }
+
+        .gantt-legend {
+            display: flex;
+            gap: 16px;
+            font-size: 11.5px;
+            color: var(--muted);
+            padding: 12px 20px 0;
+            flex-wrap: wrap;
+        }
+
+        .gantt-legend span {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .legend-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 3px;
+            display: inline-block;
+        }
+
+        .gantt-header {
+            display: flex;
+            border-bottom: 1.5px solid var(--border);
+            position: sticky;
+            top: 0;
+            background: white;
+            z-index: 2;
+        }
+
+        .gantt-header-label {
+            flex-shrink: 0;
+            padding: 10px 14px;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .gantt-header-months {
+            position: relative;
+            flex-grow: 1;
+        }
+
+        .gantt-month-tick {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            border-left: 1px solid var(--border);
+            font-size: 10.5px;
+            color: var(--muted);
+            padding: 10px 0 0 6px;
+            white-space: nowrap;
+        }
+
+        .gantt-row {
+            display: flex;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .gantt-row:last-child {
+            border-bottom: none;
+        }
+
+        .gantt-row-label {
+            flex-shrink: 0;
+            padding: 8px 14px;
+            font-size: 12px;
+        }
+
+        .gantt-row-label .g-title {
+            font-weight: 600;
+            color: var(--ink);
+        }
+
+        .gantt-row-label .g-app {
+            font-size: 11px;
+            color: var(--bp-blue);
+            font-weight: 600;
+        }
+
+        .gantt-track {
+            position: relative;
+            flex-grow: 1;
+            height: 38px;
+        }
+
+        .gantt-bar {
+            position: absolute;
+            top: 8px;
+            height: 22px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            padding: 0 8px;
+            font-size: 10.5px;
+            font-weight: 600;
+            color: white;
+            white-space: nowrap;
+            overflow: hidden;
+            box-shadow: 0 1px 2px rgba(11, 37, 69, 0.15);
+        }
+
+        .gantt-bar.estimated {
+            background-image: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.35) 0 6px, transparent 6px 12px);
+        }
+
+        .gantt-today-line {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--danger);
+            z-index: 1;
+        }
+
+        .gantt-today-label {
+            position: absolute;
+            top: -18px;
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--danger);
+            white-space: nowrap;
+        }
+
         @media (max-width: 900px) {
             .kpi-grid {
                 grid-template-columns: repeat(2, 1fr);
@@ -463,26 +604,44 @@
                 <div class="kpi-label">En retard</div>
                 <div class="kpi-value tabular {{ 'alert' if overdue_count > 0 else '' }}">{{ overdue_count }}</div>
             </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Apps pilotes</div>
+                <div class="kpi-value tabular">{{ pilot_count }}</div>
+            </div>
         </div>
 
         <!-- Navigation -->
         <div class="tabs">
             <button onclick="switchTab('register')" id="btn-register" class="tab-btn active">Registre & Saisie</button>
             <button onclick="switchTab('planning')" id="btn-planning" class="tab-btn">Planning & Échéances</button>
+            <button onclick="switchTab('gantt')" id="btn-gantt" class="tab-btn">Vue Gantt</button>
             <button onclick="switchTab('stats')" id="btn-stats" class="tab-btn">Statistiques</button>
         </div>
 
         <!-- ONGLET 1 : REGISTRE ET SAISIE -->
         <div id="tab-register" style="display:grid; grid-template-columns: 1fr 2fr; gap: 20px;">
             <div style="display:flex; flex-direction:column; gap:16px;">
-                <!-- Ajouter Application -->
+                <!-- Ajouter / Modifier une Application -->
                 <div class="card">
-                    <h2 class="card-title">Ajouter une application</h2>
-                    <form onsubmit="event.preventDefault(); createProject(this);"
+                    <h2 id="project-form-title" class="card-title">Ajouter une application</h2>
+                    <form onsubmit="event.preventDefault(); saveProject(this);"
                         style="display:flex; flex-direction:column; gap:10px; margin-top:10px;">
-                        <input name="name" type="text" placeholder="Nom de l'application" required />
-                        <textarea name="description" placeholder="Courte description..." rows="2"></textarea>
-                        <button type="submit" class="btn-secondary">Enregistrer l'app</button>
+                        <input type="hidden" id="project_id" name="project_id" value="" />
+                        <input name="name" id="project_name" type="text" placeholder="Nom de l'application" required />
+                        <textarea name="description" id="project_description" placeholder="Courte description..."
+                            rows="2"></textarea>
+                        <label
+                            style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--muted); font-weight:500;">
+                            <input type="checkbox" name="is_pilot" id="project_is_pilot" style="width:auto;" />
+                            Application pilote (priorisée pour tester le traitement de la dette avant généralisation à
+                            la catégorie)
+                        </label>
+                        <div style="display:flex; gap:8px;">
+                            <button type="submit" id="project-submit-btn" class="btn-secondary"
+                                style="flex:1;">Enregistrer l'app</button>
+                            <button type="button" id="project-cancel-btn" onclick="resetProjectForm()" class="btn-ghost"
+                                style="display:none;">Annuler</button>
+                        </div>
                     </form>
                 </div>
 
@@ -537,9 +696,15 @@
                             <input name="assignee" id="debt_assignee" type="text" placeholder="Responsable" />
                         </div>
 
-                        <div>
-                            <label class="field-label">Date cible de résolution</label>
-                            <input name="target_date" id="debt_target_date" type="date" />
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                            <div>
+                                <label class="field-label">Date de début prévisionnelle</label>
+                                <input name="start_date" id="debt_start_date" type="date" />
+                            </div>
+                            <div>
+                                <label class="field-label">Date cible de résolution</label>
+                                <input name="target_date" id="debt_target_date" type="date" />
+                            </div>
                         </div>
 
                         <div style="display:flex; gap:8px;">
@@ -577,7 +742,17 @@
                             <tr>
                                 <td>
                                     <div class="title-cell">{{ d.title }}</div>
-                                    <div class="app-tag">{{ d.project.name if d.project else "Inconnu" }}</div>
+                                    <div class="app-tag" style="display:flex; align-items:center; gap:6px;">
+                                        <span>{{ d.project.name if d.project else "Inconnu" }}</span>
+                                        {% if d.project and d.project.is_pilot %}<span
+                                            class="pill pill-pilot">Pilote</span>{% endif %}
+                                        {% if d.project %}
+                                        <button type="button"
+                                            onclick='openEditProject({{ d.project.id }}, {{ d.project.name|tojson|e }}, {{ (d.project.description or "")|tojson|e }}, {{ (d.project.is_pilot)|tojson }})'
+                                            title="Modifier l'application"
+                                            style="border:none; background:none; cursor:pointer; color:var(--muted); font-size:11px; padding:0;">✏️</button>
+                                        {% endif %}
+                                    </div>
                                 </td>
                                 <td>
                                     <span class="pill pill-cat">{{ d.category }}</span>
@@ -599,7 +774,7 @@
                                 </td>
                                 <td style="text-align:right; white-space:nowrap;">
                                     <button
-                                        onclick='openEditDebt({{ d.id }}, {{ d.project_id }}, {{ d.title|tojson|e }}, {{ d.category|tojson|e }}, {{ d.impact|tojson|e }}, {{ d.cost_days }}, {{ (d.assignee or "")|tojson|e }}, {{ (d.target_date.strftime("%Y-%m-%d") if d.target_date else "")|tojson|e }})'
+                                        onclick='openEditDebt({{ d.id }}, {{ d.project_id }}, {{ d.title|tojson|e }}, {{ d.category|tojson|e }}, {{ d.impact|tojson|e }}, {{ d.cost_days }}, {{ (d.assignee or "")|tojson|e }}, {{ (d.start_date.strftime("%Y-%m-%d") if d.start_date else "")|tojson|e }}, {{ (d.target_date.strftime("%Y-%m-%d") if d.target_date else "")|tojson|e }})'
                                         class="btn-ghost"
                                         style="color:var(--bp-blue); border-color:var(--bp-blue-100);">Modifier</button>
                                     <button onclick="deleteDebt({{ d.id }})" class="btn-ghost"
@@ -627,9 +802,13 @@
                     <div>
                         <div style="display:flex; align-items:center; gap:8px;">
                             <span class="pill pill-cat">{{ d.project.name if d.project else "Inconnu" }}</span>
+                            {% if d.project and d.project.is_pilot %}<span class="pill pill-pilot">Pilote</span>{% endif
+                            %}
                             <span style="font-weight:700; font-size:13.5px;">{{ d.title }}</span>
                         </div>
                         <div class="plan-meta">
+                            {% if d.start_date %}<span>Début prév. : <strong>{{ d.start_date.strftime("%Y-%m-%d")
+                                    }}</strong></span>{% endif %}
                             <span>Charge : <strong class="tabular">{{ d.cost_days }}j</strong></span>
                             <span>Responsable : <strong>{{ d.assignee or 'Non assigné' }}</strong></span>
                             <span>Statut : <strong>{{ d.status }}</strong></span>
@@ -646,7 +825,31 @@
         </div>
     </div>
 
-    <!-- ONGLET 3 : STATISTIQUES -->
+    <!-- ONGLET 3 : GANTT -->
+    <div id="tab-gantt" style="display:none;">
+        <div class="card">
+            <h2 class="card-title">Vue Gantt globale</h2>
+            <p class="card-subtitle">Vue d'ensemble du traitement de la dette, de la déclaration à l'échéance cible. Les
+                applications pilotes apparaissent en premier. Les barres striées indiquent une échéance estimée (aucune
+                date cible saisie).</p>
+            {% if not debts %}
+            <div class="empty-state">Aucune dette à représenter pour le moment.</div>
+            {% else %}
+            <div class="gantt-legend">
+                <span><span class="legend-dot" style="background:#157A5C;"></span> Impact faible</span>
+                <span><span class="legend-dot" style="background:#B5730A;"></span> Impact moyen</span>
+                <span><span class="legend-dot" style="background:#C0362C;"></span> Impact élevé</span>
+                <span><span class="legend-dot" style="background:var(--danger); width:3px; border-radius:0;"></span>
+                    Aujourd'hui</span>
+            </div>
+            <div id="ganttContainer" class="gantt-wrap" style="margin-top:12px;">
+                <div class="empty-state">Chargement du planning…</div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- ONGLET 4 : STATISTIQUES -->
     <div id="tab-stats" style="display:none;">
         {% if not debts %}
         <div class="card">
@@ -682,6 +885,7 @@
     </div>
 
     <script id="chart-data" type="application/json">{{ chart_data_json|safe }}</script>
+    <script id="gantt-data" type="application/json">{{ gantt_data_json|safe }}</script>
     <script>
         const CHART_DATA = JSON.parse(document.getElementById('chart-data').textContent);
         const PALETTE = ['#1256A3', '#2E86DE', '#6FA8DC', '#0B2545', '#8FB8E8'];
@@ -735,8 +939,8 @@
         }
 
         function switchTab(tab) {
-            const views = { register: document.getElementById('tab-register'), planning: document.getElementById('tab-planning'), stats: document.getElementById('tab-stats') };
-            const btns = { register: document.getElementById('btn-register'), planning: document.getElementById('btn-planning'), stats: document.getElementById('btn-stats') };
+            const views = { register: document.getElementById('tab-register'), planning: document.getElementById('tab-planning'), gantt: document.getElementById('tab-gantt'), stats: document.getElementById('tab-stats') };
+            const btns = { register: document.getElementById('btn-register'), planning: document.getElementById('btn-planning'), gantt: document.getElementById('btn-gantt'), stats: document.getElementById('btn-stats') };
 
             Object.keys(views).forEach(key => {
                 views[key].style.display = (key === tab) ? (key === 'register' ? 'grid' : 'block') : 'none';
@@ -744,9 +948,118 @@
             });
 
             if (tab === 'stats') initCharts();
+            if (tab === 'gantt') initGantt();
         }
 
-        function openEditDebt(id, projectId, title, category, impact, costDays, assignee, targetDate) {
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        let ganttInitialized = false;
+        function initGantt() {
+            if (ganttInitialized) return;
+            const container = document.getElementById('ganttContainer');
+            if (!container) return;
+            ganttInitialized = true;
+
+            try {
+                renderGantt(container);
+            } catch (err) {
+                console.error('Erreur lors du rendu du Gantt :', err);
+                container.innerHTML = `<div class="empty-state" style="color:var(--danger);">
+                    Une erreur est survenue lors de l'affichage du Gantt : ${escapeHtml(err.message)}.<br>
+                    Ouvre la console du navigateur (F12) pour plus de détails.
+                </div>`;
+                ganttInitialized = false; // permet de réessayer si on rouvre l'onglet après correction
+            }
+        }
+
+        function renderGantt(container) {
+            const dataEl = document.getElementById('gantt-data');
+            if (!dataEl) throw new Error("bloc de données gantt-data introuvable dans la page");
+            const rows = JSON.parse(dataEl.textContent);
+            if (!rows.length) {
+                container.innerHTML = `<div class="empty-state">Aucune donnée de planification à afficher pour le moment.</div>`;
+                return;
+            }
+
+            const impactColor = { 'Faible': '#157A5C', 'Moyen': '#B5730A', 'Élevé': '#C0362C' };
+            const parseDate = (s) => new Date(s + 'T00:00:00');
+
+            const starts = rows.map(r => parseDate(r.start).getTime());
+            const ends = rows.map(r => parseDate(r.end).getTime());
+            const today = new Date(); today.setHours(0, 0, 0, 0);
+            let minTime = Math.min(...starts, today.getTime());
+            let maxTime = Math.max(...ends, today.getTime());
+
+            // Marge de quelques jours de chaque côté pour la lisibilité
+            const DAY = 86400000;
+            minTime -= 3 * DAY;
+            maxTime += 3 * DAY;
+            const totalDays = Math.max(1, Math.round((maxTime - minTime) / DAY));
+
+            const PX_PER_DAY = totalDays > 240 ? 4 : (totalDays > 120 ? 7 : 12);
+            const timelineWidth = totalDays * PX_PER_DAY;
+            const LABEL_WIDTH = 260;
+
+            const dayOffset = (t) => Math.round((t - minTime) / DAY) * PX_PER_DAY;
+
+            // En-tête : un repère par mois
+            let monthTicks = '';
+            let cursor = new Date(minTime);
+            cursor.setDate(1);
+            const monthNames = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+            let safety = 0;
+            while (cursor.getTime() < maxTime && safety < 500) {
+                const offset = dayOffset(cursor.getTime());
+                if (offset >= 0) {
+                    monthTicks += `<div class="gantt-month-tick" style="left:${offset}px;">${monthNames[cursor.getMonth()]} ${cursor.getFullYear()}</div>`;
+                }
+                cursor.setMonth(cursor.getMonth() + 1);
+                safety++;
+            }
+
+            const todayOffset = dayOffset(today.getTime());
+
+            let rowsHtml = '';
+            rows.forEach(r => {
+                const startOffset = dayOffset(parseDate(r.start).getTime());
+                const endOffset = dayOffset(parseDate(r.end).getTime());
+                const width = Math.max(endOffset - startOffset, 8);
+                const color = impactColor[r.impact] || '#1256A3';
+                const pilotTag = r.isPilot ? '<span class="pill pill-pilot" style="font-size:9px; padding:1px 5px; margin-left:5px;">Pilote</span>' : '';
+                rowsHtml += `
+                <div class="gantt-row">
+                    <div class="gantt-row-label" style="width:${LABEL_WIDTH}px;">
+                        <div class="g-title">${escapeHtml(r.title)}</div>
+                        <div class="g-app">${escapeHtml(r.project)}${pilotTag}</div>
+                    </div>
+                    <div class="gantt-track">
+                        <div class="gantt-bar ${r.estimated ? 'estimated' : ''}" style="left:${startOffset}px; width:${width}px; background:${color};" title="${escapeHtml(r.title)} — ${escapeHtml(r.assignee)} — ${r.costDays}j — ${r.status}${r.estimated ? ' (échéance estimée)' : ''}">
+                            ${width > 60 ? escapeHtml(r.status) : ''}
+                        </div>
+                    </div>
+                </div>`;
+            });
+
+            container.innerHTML = `
+                <div style="min-width:${LABEL_WIDTH + timelineWidth}px;">
+                    <div class="gantt-header">
+                        <div class="gantt-header-label" style="width:${LABEL_WIDTH}px;">Dette</div>
+                        <div class="gantt-header-months" style="width:${timelineWidth}px;">${monthTicks}</div>
+                    </div>
+                    <div style="position:relative;">
+                        <div class="gantt-today-line" style="left:${LABEL_WIDTH + todayOffset}px;">
+                            <div class="gantt-today-label" style="left:-14px;">Auj.</div>
+                        </div>
+                        ${rowsHtml}
+                    </div>
+                </div>`;
+        }
+
+        function openEditDebt(id, projectId, title, category, impact, costDays, assignee, startDate, targetDate) {
             document.getElementById('debt_id').value = id;
             document.getElementById('debt_project_id').value = projectId;
             document.getElementById('debt_title').value = title;
@@ -754,6 +1067,7 @@
             document.getElementById('debt_impact').value = impact;
             document.getElementById('debt_cost_days').value = costDays;
             document.getElementById('debt_assignee').value = assignee;
+            document.getElementById('debt_start_date').value = startDate;
             document.getElementById('debt_target_date').value = targetDate;
 
             document.getElementById('debt-form-title').innerText = "Modifier la dette";
@@ -770,6 +1084,7 @@
             document.getElementById('debt_impact').value = 'Moyen';
             document.getElementById('debt_cost_days').value = '';
             document.getElementById('debt_assignee').value = '';
+            document.getElementById('debt_start_date').value = '';
             document.getElementById('debt_target_date').value = '';
 
             document.getElementById('debt-form-title').innerText = "Déclarer une dette";
@@ -777,12 +1092,42 @@
             document.getElementById('debt-cancel-btn').style.display = 'none';
         }
 
-        async function createProject(form) {
-            const formData = new FormData(form);
-            const res = await fetch(`/api/projects?name=${encodeURIComponent(formData.get('name'))}&description=${encodeURIComponent(formData.get('description'))}`, {
-                method: 'POST'
-            });
+        function openEditProject(id, name, description, isPilot) {
+            document.getElementById('project_id').value = id;
+            document.getElementById('project_name').value = name;
+            document.getElementById('project_description').value = description;
+            document.getElementById('project_is_pilot').checked = isPilot;
+
+            document.getElementById('project-form-title').innerText = "Modifier l'application";
+            document.getElementById('project-submit-btn').innerText = "Mettre à jour";
+            document.getElementById('project-cancel-btn').style.display = 'inline-block';
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        function resetProjectForm() {
+            document.getElementById('project_id').value = '';
+            document.getElementById('project_name').value = '';
+            document.getElementById('project_description').value = '';
+            document.getElementById('project_is_pilot').checked = false;
+
+            document.getElementById('project-form-title').innerText = "Ajouter une application";
+            document.getElementById('project-submit-btn').innerText = "Enregistrer l'app";
+            document.getElementById('project-cancel-btn').style.display = 'none';
+        }
+
+        async function saveProject(form) {
+            const id = document.getElementById('project_id').value;
+            const name = document.getElementById('project_name').value;
+            const description = document.getElementById('project_description').value;
+            const isPilot = document.getElementById('project_is_pilot').checked;
+
+            const params = `name=${encodeURIComponent(name)}&description=${encodeURIComponent(description)}&is_pilot=${isPilot}`;
+            const url = id ? `/api/projects/${id}?${params}` : `/api/projects?${params}`;
+            const method = id ? 'PUT' : 'POST';
+
+            const res = await fetch(url, { method: method });
             if (res.ok) {
+                resetProjectForm();
                 window.location.reload();
             } else {
                 const err = await res.json();
