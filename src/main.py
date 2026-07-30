@@ -194,6 +194,38 @@ def read_root(request: Request, db: Session = Depends(get_db)):
     total_cost = sum(d.cost_days for d in debts)
     sorted_debts = sorted(debts, key=lambda x: x.target_date if x.target_date else date.max)
 
+    open_debts = [d for d in debts if d.status != "Résolue"]
+    overdue_debts = [d for d in open_debts if d.target_date and d.target_date < date.today()]
+
+    # Agrégats pour les graphiques (calculés côté serveur, injectés en JSON dans le template)
+    categories = ["Code", "Architecture", "Sécurité", "Documentation", "Tests"]
+    category_labels, category_counts = [], []
+    for cat in categories:
+        count = sum(1 for d in debts if d.category == cat)
+        if count > 0:
+            category_labels.append(cat)
+            category_counts.append(count)
+
+    impact_order = ["Faible", "Moyen", "Élevé"]
+    impact_counts = [sum(1 for d in debts if d.impact == level) for level in impact_order]
+
+    status_order = ["Ouverte", "En cours", "Résolue"]
+    status_counts = [sum(1 for d in debts if d.status == s) for s in status_order]
+
+    cost_by_category = []
+    for cat in category_labels:
+        cost_by_category.append(sum(d.cost_days for d in debts if d.category == cat))
+
+    chart_data = {
+        "categoryLabels": category_labels,
+        "categoryCounts": category_counts,
+        "costByCategory": cost_by_category,
+        "impactLabels": impact_order,
+        "impactCounts": impact_counts,
+        "statusLabels": status_order,
+        "statusCounts": status_counts,
+    }
+
     return templates.TemplateResponse(
         "index.html",
         {
@@ -202,5 +234,9 @@ def read_root(request: Request, db: Session = Depends(get_db)):
             "debts": debts,
             "sorted_debts": sorted_debts,
             "total_cost": total_cost,
+            "open_debts_count": len(open_debts),
+            "overdue_count": len(overdue_debts),
+            "today": date.today(),
+            "chart_data_json": json.dumps(chart_data, ensure_ascii=False).replace("</", "<\\/"),
         },
     )
