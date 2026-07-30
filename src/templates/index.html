@@ -424,6 +424,38 @@
             font-size: 13.5px;
         }
 
+        /* Barre de filtres */
+        .filter-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            margin-top: 12px;
+            padding-bottom: 14px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .filter-bar select,
+        .filter-bar input[type=text] {
+            width: auto;
+            font-size: 12.5px;
+            padding: 7px 9px;
+        }
+
+        .filter-summary {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 10px;
+        }
+
+        .filter-summary strong {
+            color: var(--bp-navy);
+        }
+
+        tr.filtered-out {
+            display: none;
+        }
+
         /* Gantt */
         .gantt-wrap {
             overflow-x: auto;
@@ -760,6 +792,66 @@
             <!-- Registre des Dettes (Tableau) -->
             <div class="card">
                 <h2 class="card-title">Registre des dettes techniques</h2>
+
+                <!-- Barre de filtres -->
+                <div class="filter-bar">
+                    <input type="text" id="filterSearch" placeholder="Rechercher (titre, responsable, app)..."
+                        oninput="applyFilters()" style="flex:1; min-width:180px;" />
+                    <select id="filterProject" onchange="applyFilters()">
+                        <option value="">Toutes les apps</option>
+                        {% for p in projects %}
+                        <option value="{{ p.name }}">{{ p.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <select id="filterAppStatus" onchange="applyFilters()">
+                        <option value="">Tout statut app</option>
+                        <option value="En projet">En projet</option>
+                        <option value="En développement">En développement</option>
+                        <option value="En production">En production</option>
+                        <option value="En maintenance">En maintenance</option>
+                        <option value="Décommissionnée">Décommissionnée</option>
+                    </select>
+                    <select id="filterSocle" onchange="applyFilters()">
+                        <option value="">Tout socle</option>
+                        {% for s in distinct_socles %}
+                        <option value="{{ s }}">{{ s }}</option>
+                        {% endfor %}
+                    </select>
+                    <select id="filterFramework" onchange="applyFilters()">
+                        <option value="">Tout framework</option>
+                        {% for f in distinct_frameworks %}
+                        <option value="{{ f }}">{{ f }}</option>
+                        {% endfor %}
+                    </select>
+                    <select id="filterCategory" onchange="applyFilters()">
+                        <option value="">Toute catégorie</option>
+                        <option value="Code">Code</option>
+                        <option value="Architecture">Architecture</option>
+                        <option value="Sécurité">Sécurité</option>
+                        <option value="Documentation">Documentation</option>
+                        <option value="Tests">Tests</option>
+                    </select>
+                    <select id="filterImpact" onchange="applyFilters()">
+                        <option value="">Tout impact</option>
+                        <option value="Faible">Faible</option>
+                        <option value="Moyen">Moyen</option>
+                        <option value="Élevé">Élevé</option>
+                    </select>
+                    <select id="filterStatus" onchange="applyFilters()">
+                        <option value="">Tout statut dette</option>
+                        <option value="Ouverte">Ouverte</option>
+                        <option value="En cours">En cours</option>
+                        <option value="Résolue">Résolue</option>
+                    </select>
+                    <label
+                        style="display:flex; align-items:center; gap:5px; font-size:12.5px; color:var(--muted); white-space:nowrap;">
+                        <input type="checkbox" id="filterPilotOnly" onchange="applyFilters()" style="width:auto;" />
+                        Pilotes uniquement
+                    </label>
+                    <button type="button" class="btn-ghost" onclick="resetFilters()">Réinitialiser</button>
+                </div>
+                <div id="filterSummary" class="filter-summary"></div>
+
                 <div style="overflow-x:auto; margin-top:12px;">
                     <table>
                         <thead>
@@ -771,7 +863,7 @@
                                 <th style="text-align:right;">Actions</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody id="debtsTableBody">
                             {% if not debts %}
                             <tr>
                                 <td colspan="5" class="empty-state">Aucune dette enregistrée pour le moment.</td>
@@ -780,7 +872,15 @@
                             {% for d in debts %}
                             {% set impact_class = 'pill-eleve' if d.impact == 'Élevé' else ('pill-moyen' if d.impact ==
                             'Moyen' else 'pill-faible') %}
-                            <tr>
+                            <tr data-project="{{ d.project.name if d.project else '' }}"
+                                data-socle="{{ d.project.socle if d.project and d.project.socle else '' }}"
+                                data-framework="{{ d.project.framework if d.project and d.project.framework else '' }}"
+                                data-app-status="{{ d.project.app_status if d.project else '' }}"
+                                data-category="{{ d.category }}" data-impact="{{ d.impact }}"
+                                data-status="{{ d.status }}"
+                                data-pilot="{{ 'true' if d.project and d.project.is_pilot else 'false' }}"
+                                data-search="{{ (d.title ~ ' ' ~ (d.assignee or '') ~ ' ' ~ (d.project.name if d.project else ''))|lower }}"
+                                data-cost="{{ d.cost_days }}">
                                 <td>
                                     <div class="title-cell">{{ d.title }}</div>
                                     <div class="app-tag" style="display:flex; align-items:center; gap:6px;">
@@ -991,6 +1091,66 @@
                 },
                 options: { plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 12 } } }, cutout: '65%' }
             });
+        }
+
+        function applyFilters() {
+            const search = document.getElementById('filterSearch').value.trim().toLowerCase();
+            const project = document.getElementById('filterProject').value;
+            const appStatus = document.getElementById('filterAppStatus').value;
+            const socle = document.getElementById('filterSocle').value;
+            const framework = document.getElementById('filterFramework').value;
+            const category = document.getElementById('filterCategory').value;
+            const impact = document.getElementById('filterImpact').value;
+            const status = document.getElementById('filterStatus').value;
+            const pilotOnly = document.getElementById('filterPilotOnly').checked;
+
+            const rows = document.querySelectorAll('#debtsTableBody tr[data-project]');
+            const summary = document.getElementById('filterSummary');
+            if (rows.length === 0) {
+                summary.innerHTML = '';
+                return;
+            }
+            let visibleCount = 0;
+            let visibleCost = 0;
+
+            rows.forEach(row => {
+                const matches = (
+                    (!search || row.dataset.search.includes(search)) &&
+                    (!project || row.dataset.project === project) &&
+                    (!appStatus || row.dataset.appStatus === appStatus) &&
+                    (!socle || row.dataset.socle === socle) &&
+                    (!framework || row.dataset.framework === framework) &&
+                    (!category || row.dataset.category === category) &&
+                    (!impact || row.dataset.impact === impact) &&
+                    (!status || row.dataset.status === status) &&
+                    (!pilotOnly || row.dataset.pilot === 'true')
+                );
+                row.classList.toggle('filtered-out', !matches);
+                if (matches) {
+                    visibleCount++;
+                    visibleCost += parseFloat(row.dataset.cost || '0');
+                }
+            });
+
+            const totalCount = rows.length;
+            if (visibleCount === totalCount) {
+                summary.innerHTML = `<strong>${totalCount}</strong> dette(s) au total — charge : <strong>${visibleCost}</strong> jours`;
+            } else {
+                summary.innerHTML = `<strong>${visibleCount}</strong> dette(s) affichée(s) sur ${totalCount} — charge filtrée : <strong>${visibleCost}</strong> jours`;
+            }
+        }
+
+        function resetFilters() {
+            document.getElementById('filterSearch').value = '';
+            document.getElementById('filterProject').value = '';
+            document.getElementById('filterAppStatus').value = '';
+            document.getElementById('filterSocle').value = '';
+            document.getElementById('filterFramework').value = '';
+            document.getElementById('filterCategory').value = '';
+            document.getElementById('filterImpact').value = '';
+            document.getElementById('filterStatus').value = '';
+            document.getElementById('filterPilotOnly').checked = false;
+            applyFilters();
         }
 
         function switchTab(tab) {
@@ -1270,6 +1430,8 @@
                 document.getElementById('importMessage').style.color = 'var(--danger)';
             }
         }
+
+        applyFilters();
     </script>
 </body>
 

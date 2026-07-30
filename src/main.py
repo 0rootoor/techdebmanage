@@ -355,6 +355,9 @@ def read_root(request: Request, db: Session = Depends(get_db)):
     overdue_debts = [d for d in open_debts if d.target_date and d.target_date < date.today()]
     pilot_projects = [p for p in projects if p.is_pilot]
 
+    distinct_socles = sorted({p.socle for p in projects if p.socle})
+    distinct_frameworks = sorted({p.framework for p in projects if p.framework})
+
     # Agrégats pour les graphiques (calculés côté serveur, injectés en JSON dans le template)
     categories = ["Code", "Architecture", "Sécurité", "Documentation", "Tests"]
     category_labels, category_counts = [], []
@@ -424,6 +427,8 @@ def read_root(request: Request, db: Session = Depends(get_db)):
             "open_debts_count": len(open_debts),
             "overdue_count": len(overdue_debts),
             "pilot_count": len(pilot_projects),
+            "distinct_socles": distinct_socles,
+            "distinct_frameworks": distinct_frameworks,
             "today": date.today(),
             "chart_data_json": json.dumps(chart_data, ensure_ascii=False).replace("</", "<\\/"),
             "gantt_data_json": json.dumps(gantt_rows, ensure_ascii=False).replace("</", "<\\/"),
