@@ -32,6 +32,9 @@ class ProjectModel(Base):
     name = Column(String, unique=True, index=True)
     description = Column(String)
     is_pilot = Column(Boolean, default=False, nullable=False)
+    app_status = Column(String, default="En projet")
+    socle = Column(String, nullable=True)
+    framework = Column(String, nullable=True)
 
     debts = relationship("TechDebtModel", back_populates="project", cascade="all, delete-orphan")
 
@@ -61,6 +64,15 @@ with engine.connect() as conn:
     if "is_pilot" not in existing_columns:
         conn.execute(text("ALTER TABLE projects ADD COLUMN is_pilot BOOLEAN NOT NULL DEFAULT 0"))
         conn.commit()
+    if "app_status" not in existing_columns:
+        conn.execute(text("ALTER TABLE projects ADD COLUMN app_status VARCHAR DEFAULT 'En projet'"))
+        conn.commit()
+    if "socle" not in existing_columns:
+        conn.execute(text("ALTER TABLE projects ADD COLUMN socle VARCHAR"))
+        conn.commit()
+    if "framework" not in existing_columns:
+        conn.execute(text("ALTER TABLE projects ADD COLUMN framework VARCHAR"))
+        conn.commit()
 
     existing_debt_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(tech_debts)"))]
     if "start_date" not in existing_debt_columns:
@@ -81,20 +93,44 @@ def get_db():
 # --- API Endpoints : Projets ---
 
 @app.post("/api/projects")
-def create_project_endpoint(name: str, description: str = "", is_pilot: bool = False, db: Session = Depends(get_db)):
+def create_project_endpoint(
+    name: str,
+    description: str = "",
+    is_pilot: bool = False,
+    app_status: str = "En projet",
+    socle: str = "",
+    framework: str = "",
+    db: Session = Depends(get_db)
+):
     if not name.strip():
         raise HTTPException(status_code=400, detail="Le nom du projet est requis")
     existing = db.query(ProjectModel).filter(ProjectModel.name == name.strip()).first()
     if existing:
         raise HTTPException(status_code=400, detail="Ce projet existe déjà")
     
-    db_project = ProjectModel(name=name.strip(), description=description.strip(), is_pilot=is_pilot)
+    db_project = ProjectModel(
+        name=name.strip(),
+        description=description.strip(),
+        is_pilot=is_pilot,
+        app_status=app_status,
+        socle=socle.strip() or None,
+        framework=framework.strip() or None,
+    )
     db.add(db_project)
     db.commit()
     return {"message": "Projet créé avec succès"}
 
 @app.put("/api/projects/{project_id}")
-def update_project_endpoint(project_id: int, name: str, description: str = "", is_pilot: bool = False, db: Session = Depends(get_db)):
+def update_project_endpoint(
+    project_id: int,
+    name: str,
+    description: str = "",
+    is_pilot: bool = False,
+    app_status: str = "En projet",
+    socle: str = "",
+    framework: str = "",
+    db: Session = Depends(get_db)
+):
     db_project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
     if not db_project:
         raise HTTPException(status_code=404, detail="Application non trouvée")
@@ -107,8 +143,41 @@ def update_project_endpoint(project_id: int, name: str, description: str = "", i
     db_project.name = name.strip()
     db_project.description = description.strip()
     db_project.is_pilot = is_pilot
+    db_project.app_status = app_status
+    db_project.socle = socle.strip() or None
+    db_project.framework = framework.strip() or None
     db.commit()
     return {"message": "Application mise à jour avec succès"}
+
+def _clean_str(value):
+    """Nettoie une valeur pandas (NaN, float, etc.) en chaîne, ou None si vide."""
+    if pd.isna(value):
+        return None
+    s = str(value).strip()
+    if not s or s.lower() == 'nan':
+        return None
+    return s
+
+def _parse_excel_date(value):
+    """Convertit une date issue d'Excel/CSV (Timestamp, string, etc.) en date Python, ou None."""
+    if pd.isna(value):
+        return None
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return value.date() if isinstance(value, datetime) else value.to_pydatetime().date()
+    s = str(value).strip()
+    if not s or s.lower() == 'nan':
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+VALID_APP_STATUSES = {"En projet", "En développement", "En production", "En maintenance", "Décommissionnée"}
+VALID_CATEGORIES = {"Code", "Architecture", "Sécurité", "Documentation", "Tests"}
+VALID_IMPACTS = {"Faible", "Moyen", "Élevé"}
+VALID_DEBT_STATUSES = {"Ouverte", "En cours", "Résolue"}
 
 @app.post("/api/projects/import")
 async def import_projects(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -124,25 +193,72 @@ async def import_projects(file: UploadFile = File(...), db: Session = Depends(ge
         if 'name' not in df.columns:
             raise HTTPException(status_code=400, detail="Le fichier doit contenir une colonne 'name'")
 
-        imported_count = 0
-        for _, row in df.iterrows():
-            name = str(row['name']).strip()
-            if not name or name == 'nan':
-                continue
-            description = str(row.get('description', '')).strip()
-            if description == 'nan':
-                description = ''
-            is_pilot_raw = str(row.get('is_pilot', '')).strip().lower()
-            is_pilot = is_pilot_raw in ('1', 'true', 'oui', 'yes', 'x')
+        imported_projects = 0
+        imported_debts = 0
 
-            existing = db.query(ProjectModel).filter(ProjectModel.name == name).first()
-            if not existing:
-                db_project = ProjectModel(name=name, description=description, is_pilot=is_pilot)
+        for _, row in df.iterrows():
+            name = _clean_str(row.get('name'))
+            if not name:
+                continue
+
+            # --- Champs de l'application ---
+            description = _clean_str(row.get('description')) or ''
+            is_pilot_raw = (_clean_str(row.get('is_pilot')) or '').lower()
+            is_pilot = is_pilot_raw in ('1', 'true', 'oui', 'yes', 'x')
+            app_status = _clean_str(row.get('app_status'))
+            if app_status not in VALID_APP_STATUSES:
+                app_status = "En projet"
+            socle = _clean_str(row.get('socle'))
+            framework = _clean_str(row.get('framework'))
+
+            db_project = db.query(ProjectModel).filter(ProjectModel.name == name).first()
+            if not db_project:
+                db_project = ProjectModel(
+                    name=name, description=description, is_pilot=is_pilot,
+                    app_status=app_status, socle=socle, framework=framework,
+                )
                 db.add(db_project)
-                imported_count += 1
+                db.flush()  # pour obtenir db_project.id avant le commit final
+                imported_projects += 1
+
+            # --- Champ(s) de dette technique (optionnels, sur la même ligne) ---
+            debt_title = _clean_str(row.get('debt_title'))
+            if debt_title:
+                category = _clean_str(row.get('debt_category'))
+                if category not in VALID_CATEGORIES:
+                    category = "Code"
+                impact = _clean_str(row.get('debt_impact'))
+                if impact not in VALID_IMPACTS:
+                    impact = "Moyen"
+                status = _clean_str(row.get('debt_status'))
+                if status not in VALID_DEBT_STATUSES:
+                    status = "Ouverte"
+                cost_days_raw = _clean_str(row.get('debt_cost_days'))
+                try:
+                    cost_days = int(float(cost_days_raw)) if cost_days_raw else 1
+                except ValueError:
+                    cost_days = 1
+                assignee = _clean_str(row.get('debt_assignee'))
+                start_date = _parse_excel_date(row.get('debt_start_date'))
+                target_date = _parse_excel_date(row.get('debt_target_date'))
+
+                db_debt = TechDebtModel(
+                    title=debt_title, category=category, impact=impact, status=status,
+                    cost_days=cost_days, assignee=assignee,
+                    start_date=start_date, target_date=target_date,
+                    project=db_project,
+                )
+                db.add(db_debt)
+                imported_debts += 1
 
         db.commit()
-        return {"message": f"{imported_count} application(s) importée(s) avec succès !"}
+        message = f"{imported_projects} application(s) importée(s)"
+        if imported_debts:
+            message += f" et {imported_debts} dette(s) importée(s)"
+        message += " avec succès !"
+        return {"message": message}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Erreur : {str(e)}")
 

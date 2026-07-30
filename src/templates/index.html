@@ -630,6 +630,45 @@
                         <input name="name" id="project_name" type="text" placeholder="Nom de l'application" required />
                         <textarea name="description" id="project_description" placeholder="Courte description..."
                             rows="2"></textarea>
+
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                            <div>
+                                <label class="field-label">Statut</label>
+                                <select name="app_status" id="project_app_status">
+                                    <option value="En projet">En projet</option>
+                                    <option value="En développement">En développement</option>
+                                    <option value="En production">En production</option>
+                                    <option value="En maintenance">En maintenance</option>
+                                    <option value="Décommissionnée">Décommissionnée</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="field-label">Socle</label>
+                                <input name="socle" id="project_socle" type="text" list="socle-suggestions"
+                                    placeholder="Ex: OpenShift" />
+                                <datalist id="socle-suggestions">
+                                    <option value="OpenShift"></option>
+                                    <option value="Kubernetes"></option>
+                                    <option value="VM / Serveur physique"></option>
+                                    <option value="Mainframe"></option>
+                                    <option value="Cloud public (AWS/Azure/GCP)"></option>
+                                </datalist>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="field-label">Framework</label>
+                            <input name="framework" id="project_framework" type="text" list="framework-suggestions"
+                                placeholder="Ex: Spring Boot, Angular, .NET..." />
+                            <datalist id="framework-suggestions">
+                                <option value="Spring Boot"></option>
+                                <option value="Angular"></option>
+                                <option value=".NET"></option>
+                                <option value="Node.js"></option>
+                                <option value="React"></option>
+                            </datalist>
+                        </div>
+
                         <label
                             style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--muted); font-weight:500;">
                             <input type="checkbox" name="is_pilot" id="project_is_pilot" style="width:auto;" />
@@ -648,9 +687,11 @@
                 <!-- Import Excel / CSV -->
                 <div class="card">
                     <h2 class="card-title">Importer depuis Excel / CSV</h2>
-                    <p class="card-subtitle">Le fichier doit contenir une colonne <code
-                            style="background:var(--bp-blue-50); padding:1px 5px; border-radius:4px; font-weight:600;">name</code>.
-                    </p>
+                    <p class="card-subtitle">Colonnes application : <code
+                            style="background:var(--bp-blue-50); padding:1px 5px; border-radius:4px; font-weight:600;">name</code>
+                        (requis), description, is_pilot, app_status, socle, framework.<br>
+                        Colonnes dette (optionnelles, sur la même ligne) : debt_title, debt_category, debt_impact,
+                        debt_status, debt_cost_days, debt_assignee, debt_start_date, debt_target_date.</p>
                     <form onsubmit="event.preventDefault(); uploadFile();"
                         style="display:flex; flex-direction:column; gap:10px;">
                         <input type="file" id="fileInput" accept=".xlsx, .xls, .csv" style="font-size:12.5px;"
@@ -743,12 +784,26 @@
                                 <td>
                                     <div class="title-cell">{{ d.title }}</div>
                                     <div class="app-tag" style="display:flex; align-items:center; gap:6px;">
+                                        {% if d.project %}
+                                        {% set status_color = '#157A5C' if d.project.app_status == 'En production' else
+                                        ('#B5730A' if d.project.app_status in ['En développement','En maintenance'] else
+                                        ('#94A3B8' if d.project.app_status == 'Décommissionnée' else 'var(--bp-blue)'))
+                                        %}
+                                        <span
+                                            style="width:7px; height:7px; border-radius:50%; background:{{ status_color }}; flex-shrink:0;"
+                                            title="{{ d.project.app_status }}"></span>
+                                        {% endif %}
                                         <span>{{ d.project.name if d.project else "Inconnu" }}</span>
                                         {% if d.project and d.project.is_pilot %}<span
                                             class="pill pill-pilot">Pilote</span>{% endif %}
+                                        {% if d.project and (d.project.socle or d.project.framework) %}
+                                        <span
+                                            title="{{ d.project.app_status }}{% if d.project.socle %} — Socle : {{ d.project.socle }}{% endif %}{% if d.project.framework %} — Framework : {{ d.project.framework }}{% endif %}"
+                                            style="cursor:help; color:var(--muted); font-size:11px;">ⓘ</span>
+                                        {% endif %}
                                         {% if d.project %}
                                         <button type="button"
-                                            onclick='openEditProject({{ d.project.id }}, {{ d.project.name|tojson|e }}, {{ (d.project.description or "")|tojson|e }}, {{ (d.project.is_pilot)|tojson }})'
+                                            onclick='openEditProject({{ d.project.id }}, {{ d.project.name|tojson|e }}, {{ (d.project.description or "")|tojson|e }}, {{ (d.project.is_pilot)|tojson }}, {{ d.project.app_status|tojson|e }}, {{ (d.project.socle or "")|tojson|e }}, {{ (d.project.framework or "")|tojson|e }})'
                                             title="Modifier l'application"
                                             style="border:none; background:none; cursor:pointer; color:var(--muted); font-size:11px; padding:0;">✏️</button>
                                         {% endif %}
@@ -1092,11 +1147,14 @@
             document.getElementById('debt-cancel-btn').style.display = 'none';
         }
 
-        function openEditProject(id, name, description, isPilot) {
+        function openEditProject(id, name, description, isPilot, appStatus, socle, framework) {
             document.getElementById('project_id').value = id;
             document.getElementById('project_name').value = name;
             document.getElementById('project_description').value = description;
             document.getElementById('project_is_pilot').checked = isPilot;
+            document.getElementById('project_app_status').value = appStatus;
+            document.getElementById('project_socle').value = socle;
+            document.getElementById('project_framework').value = framework;
 
             document.getElementById('project-form-title').innerText = "Modifier l'application";
             document.getElementById('project-submit-btn').innerText = "Mettre à jour";
@@ -1109,6 +1167,9 @@
             document.getElementById('project_name').value = '';
             document.getElementById('project_description').value = '';
             document.getElementById('project_is_pilot').checked = false;
+            document.getElementById('project_app_status').value = 'En projet';
+            document.getElementById('project_socle').value = '';
+            document.getElementById('project_framework').value = '';
 
             document.getElementById('project-form-title').innerText = "Ajouter une application";
             document.getElementById('project-submit-btn').innerText = "Enregistrer l'app";
@@ -1120,8 +1181,11 @@
             const name = document.getElementById('project_name').value;
             const description = document.getElementById('project_description').value;
             const isPilot = document.getElementById('project_is_pilot').checked;
+            const appStatus = document.getElementById('project_app_status').value;
+            const socle = document.getElementById('project_socle').value;
+            const framework = document.getElementById('project_framework').value;
 
-            const params = `name=${encodeURIComponent(name)}&description=${encodeURIComponent(description)}&is_pilot=${isPilot}`;
+            const params = `name=${encodeURIComponent(name)}&description=${encodeURIComponent(description)}&is_pilot=${isPilot}&app_status=${encodeURIComponent(appStatus)}&socle=${encodeURIComponent(socle)}&framework=${encodeURIComponent(framework)}`;
             const url = id ? `/api/projects/${id}?${params}` : `/api/projects?${params}`;
             const method = id ? 'PUT' : 'POST';
 
