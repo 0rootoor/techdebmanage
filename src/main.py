@@ -1,8 +1,9 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Request, Form
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date, Boolean, text
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date, Boolean, DateTime, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from datetime import date, datetime, timedelta
@@ -10,6 +11,7 @@ import pandas as pd
 import io
 import json
 import os
+import urllib.request
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
@@ -54,6 +56,16 @@ class TechDebtModel(Base):
     project_id = Column(Integer, ForeignKey("projects.id"))
     project = relationship("ProjectModel", back_populates="debts")
 
+class AuditLogModel(Base):
+    __tablename__ = "audit_log"
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    username = Column(String)
+    entity_type = Column(String)   # "Application" ou "Dette"
+    entity_name = Column(String)
+    action = Column(String)        # "Création", "Modification", "Suppression", "Changement de statut"
+    details = Column(String, nullable=True)
+
 Base.metadata.create_all(bind=engine)
 
 # Petite migration de compatibilité : si la base existait déjà (avant l'ajout
@@ -83,12 +95,80 @@ with engine.connect() as conn:
 
 app = FastAPI(title="Gestion Avancée de la Dette Technique")
 
+# --- Authentification ---
+# Authentification minimale par mot de passe partagé + session signée (cookie).
+# Adaptée à un usage en petite équipe interne. Pour un déploiement plus large
+# (plusieurs équipes, traçabilité fine par utilisateur, SSO...), il faudra
+# remplacer ceci par une vraie gestion de comptes (ex: FastAPI Users, SSO d'entreprise).
+APP_PASSWORD = os.environ.get("TECHDEBT_APP_PASSWORD", "changeme123")
+SESSION_SECRET_KEY = os.environ.get("TECHDEBT_SECRET_KEY", "dev-secret-key-change-in-production")
+if APP_PASSWORD == "changeme123":
+    print("⚠️  ATTENTION : mot de passe par défaut utilisé. Définis la variable d'environnement "
+          "TECHDEBT_APP_PASSWORD avant tout déploiement au-delà de ton poste.")
+if SESSION_SECRET_KEY == "dev-secret-key-change-in-production":
+    print("⚠️  ATTENTION : clé de session par défaut utilisée. Définis la variable d'environnement "
+          "TECHDEBT_SECRET_KEY avant tout déploiement au-delà de ton poste.")
+
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY, session_cookie="techdebt_session")
+
+# --- Alertes Slack (optionnel) ---
+# Si la variable d'environnement TECHDEBT_SLACK_WEBHOOK_URL est définie, un bouton
+# permet d'envoyer un résumé des alertes sur Slack. Sans elle, les alertes restent
+# visibles uniquement dans l'onglet "Alertes" de l'application.
+SLACK_WEBHOOK_URL = os.environ.get("TECHDEBT_SLACK_WEBHOOK_URL", "")
+
+def send_slack_message(text: str) -> bool:
+    if not SLACK_WEBHOOK_URL:
+        return False
+    try:
+        data = json.dumps({"text": text}).encode("utf-8")
+        req = urllib.request.Request(SLACK_WEBHOOK_URL, data=data, headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5)
+        return True
+    except Exception as e:
+        print(f"Échec de l'envoi Slack : {e}")
+        return False
+
+def require_api_auth(request: Request) -> str:
+    """Dépendance pour les endpoints API : lève une 401 JSON si non connecté."""
+    if not request.session.get("authenticated"):
+        raise HTTPException(status_code=401, detail="Authentification requise")
+    return request.session.get("username", "Utilisateur")
+
+def log_action(db: Session, username: str, entity_type: str, entity_name: str, action: str, details: str = None):
+    """Enregistre une entrée dans l'historique. Ne fait pas de commit : à inclure dans la même transaction que l'action elle-même."""
+    entry = AuditLogModel(username=username, entity_type=entity_type, entity_name=entity_name, action=action, details=details)
+    db.add(entry)
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    if request.session.get("authenticated"):
+        return RedirectResponse(url="/", status_code=303)
+    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+
+@app.post("/login")
+def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+    if password == APP_PASSWORD:
+        request.session["authenticated"] = True
+        request.session["username"] = username.strip() or "Utilisateur"
+        return RedirectResponse(url="/", status_code=303)
+    return templates.TemplateResponse(
+        "login.html",
+        {"request": request, "error": "Mot de passe incorrect."},
+        status_code=401,
+    )
+
+@app.get("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/login", status_code=303)
 
 # --- API Endpoints : Projets ---
 
@@ -100,7 +180,8 @@ def create_project_endpoint(
     app_status: str = "En projet",
     socle: str = "",
     framework: str = "",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: str = Depends(require_api_auth),
 ):
     if not name.strip():
         raise HTTPException(status_code=400, detail="Le nom du projet est requis")
@@ -117,6 +198,8 @@ def create_project_endpoint(
         framework=framework.strip() or None,
     )
     db.add(db_project)
+    log_action(db, user, "Application", db_project.name, "Création",
+               f"Statut : {app_status}" + (f", pilote" if is_pilot else ""))
     db.commit()
     return {"message": "Projet créé avec succès"}
 
@@ -129,7 +212,8 @@ def update_project_endpoint(
     app_status: str = "En projet",
     socle: str = "",
     framework: str = "",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: str = Depends(require_api_auth),
 ):
     db_project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
     if not db_project:
@@ -146,6 +230,8 @@ def update_project_endpoint(
     db_project.app_status = app_status
     db_project.socle = socle.strip() or None
     db_project.framework = framework.strip() or None
+    log_action(db, user, "Application", db_project.name, "Modification",
+               f"Statut : {app_status}" + (f", pilote" if is_pilot else ""))
     db.commit()
     return {"message": "Application mise à jour avec succès"}
 
@@ -180,7 +266,11 @@ VALID_IMPACTS = {"Faible", "Moyen", "Élevé"}
 VALID_DEBT_STATUSES = {"Ouverte", "En cours", "Résolue"}
 
 @app.post("/api/projects/import")
-async def import_projects(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_projects(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: str = Depends(require_api_auth),
+):
     contents = await file.read()
     try:
         if file.filename.endswith('.csv'):
@@ -256,6 +346,10 @@ async def import_projects(file: UploadFile = File(...), db: Session = Depends(ge
         if imported_debts:
             message += f" et {imported_debts} dette(s) importée(s)"
         message += " avec succès !"
+        if imported_projects or imported_debts:
+            log_action(db, user, "Import", file.filename, "Import fichier",
+                       f"{imported_projects} application(s), {imported_debts} dette(s)")
+            db.commit()
         return {"message": message}
     except HTTPException:
         raise
@@ -274,7 +368,8 @@ def create_debt_endpoint(
     assignee: str = "",
     start_date: str = "",
     target_date: str = "",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: str = Depends(require_api_auth),
 ):
     start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
     target = datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else None
@@ -289,6 +384,7 @@ def create_debt_endpoint(
         project_id=project_id
     )
     db.add(db_debt)
+    log_action(db, user, "Dette", title, "Création", f"{category} / {impact} / {cost_days}j")
     db.commit()
     return {"message": "Dette ajoutée avec succès"}
 
@@ -303,7 +399,8 @@ def update_debt_endpoint(
     assignee: str = "",
     start_date: str = "",
     target_date: str = "",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: str = Depends(require_api_auth),
 ):
     db_debt = db.query(TechDebtModel).filter(TechDebtModel.id == debt_id).first()
     if not db_debt:
@@ -319,33 +416,148 @@ def update_debt_endpoint(
     db_debt.assignee = assignee if assignee else None
     db_debt.start_date = start
     db_debt.target_date = target
-    
+    log_action(db, user, "Dette", title, "Modification", f"{category} / {impact} / {cost_days}j")
     db.commit()
     return {"message": "Dette mise à jour avec succès"}
 
 @app.delete("/api/debts/{debt_id}")
-def delete_debt_endpoint(debt_id: int, db: Session = Depends(get_db)):
+def delete_debt_endpoint(debt_id: int, db: Session = Depends(get_db), user: str = Depends(require_api_auth)):
     db_debt = db.query(TechDebtModel).filter(TechDebtModel.id == debt_id).first()
     if not db_debt:
         raise HTTPException(status_code=404, detail="Dette non trouvée")
+    title = db_debt.title
     db.delete(db_debt)
+    log_action(db, user, "Dette", title, "Suppression")
     db.commit()
     return {"message": "Dette supprimée"}
 
 @app.patch("/api/debts/{debt_id}/status")
-def update_debt_status(debt_id: int, status: str, db: Session = Depends(get_db)):
+def update_debt_status(debt_id: int, status: str, db: Session = Depends(get_db), user: str = Depends(require_api_auth)):
     db_debt = db.query(TechDebtModel).filter(TechDebtModel.id == debt_id).first()
     if not db_debt:
         raise HTTPException(status_code=404, detail="Dette non trouvée")
+    old_status = db_debt.status
     db_debt.status = status
+    log_action(db, user, "Dette", db_debt.title, "Changement de statut", f"{old_status} → {status}")
     db.commit()
     return {"message": "Statut mis à jour"}
+
+
+@app.get("/api/debts/export")
+def export_debts(
+    ids: str = "",
+    format: str = "xlsx",
+    db: Session = Depends(get_db),
+    user: str = Depends(require_api_auth),
+):
+    query = db.query(TechDebtModel)
+    if ids:
+        id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+        if id_list:
+            query = query.filter(TechDebtModel.id.in_(id_list))
+    debts = query.all()
+
+    rows = []
+    for d in debts:
+        rows.append({
+            "Application": d.project.name if d.project else "",
+            "Statut app": d.project.app_status if d.project else "",
+            "Socle": d.project.socle if d.project and d.project.socle else "",
+            "Framework": d.project.framework if d.project and d.project.framework else "",
+            "Pilote": "Oui" if d.project and d.project.is_pilot else "Non",
+            "Titre dette": d.title,
+            "Catégorie": d.category,
+            "Impact": d.impact,
+            "Statut dette": d.status,
+            "Charge (jours)": d.cost_days,
+            "Responsable": d.assignee or "",
+            "Date de début": d.start_date.isoformat() if d.start_date else "",
+            "Date cible": d.target_date.isoformat() if d.target_date else "",
+        })
+    df = pd.DataFrame(rows, columns=[
+        "Application", "Statut app", "Socle", "Framework", "Pilote", "Titre dette",
+        "Catégorie", "Impact", "Statut dette", "Charge (jours)", "Responsable",
+        "Date de début", "Date cible",
+    ])
+
+    buffer = io.BytesIO()
+    if format == "csv":
+        df.to_csv(buffer, index=False, encoding="utf-8-sig")
+        media_type = "text/csv"
+        filename = "registre_dette_technique.csv"
+    else:
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Dettes")
+            worksheet = writer.sheets["Dettes"]
+            for col_idx, col_name in enumerate(df.columns, start=1):
+                max_len = max([len(str(col_name))] + [len(str(v)) for v in df[col_name].astype(str)]) if len(df) else len(col_name)
+                worksheet.column_dimensions[worksheet.cell(row=1, column=col_idx).column_letter].width = min(max_len + 2, 40)
+            for cell in worksheet[1]:
+                cell.font = cell.font.copy(bold=True)
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = "registre_dette_technique.xlsx"
+
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/alerts/send")
+def send_alerts_endpoint(db: Session = Depends(get_db), user: str = Depends(require_api_auth)):
+    if not SLACK_WEBHOOK_URL:
+        return {
+            "sent": False,
+            "message": "Aucun webhook Slack configuré (variable d'environnement TECHDEBT_SLACK_WEBHOOK_URL absente). "
+                       "Les alertes restent visibles dans l'onglet Alertes de l'application."
+        }
+
+    debts = db.query(TechDebtModel).all()
+    open_debts = [d for d in debts if d.status != "Résolue"]
+    overdue = [d for d in open_debts if d.target_date and d.target_date < date.today()]
+    soon_threshold = date.today() + timedelta(days=7)
+    soon = [d for d in open_debts if d.target_date and date.today() <= d.target_date <= soon_threshold]
+    stale_pilot = [
+        d for d in open_debts
+        if d.project and d.project.is_pilot and d.status == "Ouverte"
+        and (date.today() - (d.start_date or d.created_at or date.today())).days > 30
+    ]
+
+    if not overdue and not soon and not stale_pilot:
+        return {"sent": False, "message": "Aucune alerte à signaler pour le moment."}
+
+    lines = [f"*Alertes dette technique — {date.today().isoformat()}*"]
+    if overdue:
+        lines.append(f"\n:red_circle: *{len(overdue)} dette(s) en retard*")
+        for d in overdue[:10]:
+            lines.append(f"• {d.title} ({d.project.name if d.project else '?'}) — échéance {d.target_date.isoformat()}")
+    if soon:
+        lines.append(f"\n:large_orange_circle: *{len(soon)} échéance(s) dans les 7 prochains jours*")
+        for d in soon[:10]:
+            lines.append(f"• {d.title} ({d.project.name if d.project else '?'}) — échéance {d.target_date.isoformat()}")
+    if stale_pilot:
+        lines.append(f"\n:large_blue_circle: *{len(stale_pilot)} dette(s) pilote(s) ouverte(s) depuis plus de 30 jours*")
+        for d in stale_pilot[:10]:
+            lines.append(f"• {d.title} ({d.project.name if d.project else '?'})")
+
+    ok = send_slack_message("\n".join(lines))
+    if ok:
+        log_action(db, user, "Alertes", "Slack", "Envoi", f"{len(overdue)} retard(s), {len(soon)} proche(s), {len(stale_pilot)} pilote(s) bloquée(s)")
+        db.commit()
+        return {"sent": True, "message": "Alertes envoyées sur Slack avec succès."}
+    return {"sent": False, "message": "Échec de l'envoi sur Slack. Vérifie l'URL du webhook et la connexion réseau."}
 
 
 # --- Interface Frontend Complète ---
 
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request, db: Session = Depends(get_db)):
+    if not request.session.get("authenticated"):
+        return RedirectResponse(url="/login", status_code=303)
+    current_user = request.session.get("username", "Utilisateur")
+
     projects = db.query(ProjectModel).order_by(ProjectModel.is_pilot.desc(), ProjectModel.name).all()
     debts = db.query(TechDebtModel).all()
     total_cost = sum(d.cost_days for d in debts)
@@ -416,10 +628,45 @@ def read_root(request: Request, db: Session = Depends(get_db)):
     # Tri : applications pilotes d'abord, puis par date de début
     gantt_rows.sort(key=lambda r: (not r["isPilot"], r["start"]))
 
+    # Vue "portefeuille applicatif" : agrégats par application plutôt que par dette
+    portfolio_rows = []
+    for p in projects:
+        p_debts = [d for d in debts if d.project_id == p.id]
+        p_overdue = sum(1 for d in p_debts if d.target_date and d.target_date < date.today() and d.status != "Résolue")
+        portfolio_rows.append({
+            "project": p,
+            "debt_count": len(p_debts),
+            "total_cost": sum(d.cost_days for d in p_debts),
+            "open_count": sum(1 for d in p_debts if d.status == "Ouverte"),
+            "in_progress_count": sum(1 for d in p_debts if d.status == "En cours"),
+            "resolved_count": sum(1 for d in p_debts if d.status == "Résolue"),
+            "overdue_count": p_overdue,
+        })
+    portfolio_rows.sort(key=lambda r: (not r["project"].is_pilot, -r["total_cost"]))
+
+    # Alertes : échéances dépassées, échéances proches (7 jours), dettes pilotes bloquées (30 jours)
+    SOON_DAYS = 7
+    STALE_PILOT_DAYS = 30
+    soon_threshold = date.today() + timedelta(days=SOON_DAYS)
+    alerts_overdue = [d for d in overdue_debts]
+    alerts_soon = [
+        d for d in open_debts
+        if d.target_date and date.today() <= d.target_date <= soon_threshold
+    ]
+    alerts_stale_pilot = [
+        d for d in open_debts
+        if d.project and d.project.is_pilot and d.status == "Ouverte"
+        and (date.today() - (d.start_date or d.created_at or date.today())).days > STALE_PILOT_DAYS
+    ]
+
+    # Historique récent (200 dernières actions, les plus récentes en premier)
+    recent_audit_log = db.query(AuditLogModel).order_by(AuditLogModel.timestamp.desc()).limit(200).all()
+
     return templates.TemplateResponse(
         "index.html",
         {
             "request": request,
+            "current_user": current_user,
             "projects": projects,
             "debts": debts,
             "sorted_debts": sorted_debts,
@@ -432,5 +679,13 @@ def read_root(request: Request, db: Session = Depends(get_db)):
             "today": date.today(),
             "chart_data_json": json.dumps(chart_data, ensure_ascii=False).replace("</", "<\\/"),
             "gantt_data_json": json.dumps(gantt_rows, ensure_ascii=False).replace("</", "<\\/"),
+            "portfolio_rows": portfolio_rows,
+            "alerts_overdue": alerts_overdue,
+            "alerts_soon": alerts_soon,
+            "alerts_stale_pilot": alerts_stale_pilot,
+            "soon_days": SOON_DAYS,
+            "stale_pilot_days": STALE_PILOT_DAYS,
+            "recent_audit_log": recent_audit_log,
+            "slack_configured": bool(SLACK_WEBHOOK_URL),
         },
     )

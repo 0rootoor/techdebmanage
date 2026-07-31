@@ -456,6 +456,21 @@
             display: none;
         }
 
+        th.sortable {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        th.sortable:hover {
+            color: var(--bp-blue);
+        }
+
+        .sort-arrow {
+            font-size: 9px;
+            display: inline-block;
+            width: 10px;
+        }
+
         /* Gantt */
         .gantt-wrap {
             overflow-x: auto;
@@ -616,6 +631,12 @@
                     <p>Suivi des applications, projets et planification</p>
                 </div>
             </div>
+            <div style="display:flex; align-items:center; gap:14px;">
+                <span style="font-size:13px; color:var(--muted);">Connecté en tant que <strong
+                        style="color:var(--bp-navy);">{{ current_user }}</strong></span>
+                <a href="/logout"
+                    style="font-size:12.5px; color:var(--muted); text-decoration:none; border:1px solid var(--border); padding:6px 12px; border-radius:8px;">Déconnexion</a>
+            </div>
         </div>
 
         <!-- KPI -->
@@ -647,6 +668,12 @@
             <button onclick="switchTab('register')" id="btn-register" class="tab-btn active">Registre & Saisie</button>
             <button onclick="switchTab('planning')" id="btn-planning" class="tab-btn">Planning & Échéances</button>
             <button onclick="switchTab('gantt')" id="btn-gantt" class="tab-btn">Vue Gantt</button>
+            <button onclick="switchTab('portfolio')" id="btn-portfolio" class="tab-btn">Portefeuille</button>
+            <button onclick="switchTab('alerts')" id="btn-alerts" class="tab-btn">Alertes{% if (alerts_overdue|length +
+                alerts_soon|length + alerts_stale_pilot|length) > 0 %} <span
+                    style="background:var(--danger); color:white; border-radius:999px; font-size:10px; padding:1px 6px; margin-left:3px;">{{
+                    alerts_overdue|length + alerts_soon|length + alerts_stale_pilot|length }}</span>{% endif %}</button>
+            <button onclick="switchTab('history')" id="btn-history" class="tab-btn">Historique</button>
             <button onclick="switchTab('stats')" id="btn-stats" class="tab-btn">Statistiques</button>
         </div>
 
@@ -850,16 +877,26 @@
                     </label>
                     <button type="button" class="btn-ghost" onclick="resetFilters()">Réinitialiser</button>
                 </div>
-                <div id="filterSummary" class="filter-summary"></div>
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <div id="filterSummary" class="filter-summary"></div>
+                    <div style="display:flex; gap:6px;">
+                        <button type="button" class="btn-ghost" onclick="exportRegistre('xlsx')">⬇ Excel</button>
+                        <button type="button" class="btn-ghost" onclick="exportRegistre('csv')">⬇ CSV</button>
+                    </div>
+                </div>
 
                 <div style="overflow-x:auto; margin-top:12px;">
                     <table>
                         <thead>
                             <tr>
-                                <th>App / Titre</th>
-                                <th>Catégorie / Impact</th>
-                                <th>Charge & resp.</th>
-                                <th>Statut</th>
+                                <th class="sortable" data-sort-key="title" onclick="sortTable('title')">App / Titre
+                                    <span class="sort-arrow"></span></th>
+                                <th class="sortable" data-sort-key="impact" onclick="sortTable('impact')">Catégorie /
+                                    Impact <span class="sort-arrow"></span></th>
+                                <th class="sortable" data-sort-key="cost" onclick="sortTable('cost')">Charge & resp.
+                                    <span class="sort-arrow"></span></th>
+                                <th class="sortable" data-sort-key="status" onclick="sortTable('status')">Statut <span
+                                        class="sort-arrow"></span></th>
                                 <th style="text-align:right;">Actions</th>
                             </tr>
                         </thead>
@@ -872,7 +909,8 @@
                             {% for d in debts %}
                             {% set impact_class = 'pill-eleve' if d.impact == 'Élevé' else ('pill-moyen' if d.impact ==
                             'Moyen' else 'pill-faible') %}
-                            <tr data-project="{{ d.project.name if d.project else '' }}"
+                            <tr data-id="{{ d.id }}" data-title="{{ d.title|lower }}"
+                                data-project="{{ d.project.name if d.project else '' }}"
                                 data-socle="{{ d.project.socle if d.project and d.project.socle else '' }}"
                                 data-framework="{{ d.project.framework if d.project and d.project.framework else '' }}"
                                 data-app-status="{{ d.project.app_status if d.project else '' }}"
@@ -880,7 +918,8 @@
                                 data-status="{{ d.status }}"
                                 data-pilot="{{ 'true' if d.project and d.project.is_pilot else 'false' }}"
                                 data-search="{{ (d.title ~ ' ' ~ (d.assignee or '') ~ ' ' ~ (d.project.name if d.project else ''))|lower }}"
-                                data-cost="{{ d.cost_days }}">
+                                data-cost="{{ d.cost_days }}"
+                                data-target="{{ d.target_date.isoformat() if d.target_date else '' }}">
                                 <td>
                                     <div class="title-cell">{{ d.title }}</div>
                                     <div class="app-tag" style="display:flex; align-items:center; gap:6px;">
@@ -1004,7 +1043,188 @@
         </div>
     </div>
 
-    <!-- ONGLET 4 : STATISTIQUES -->
+    <!-- ONGLET 4 : PORTEFEUILLE APPLICATIF -->
+    <div id="tab-portfolio" style="display:none;">
+        <div class="card">
+            <h2 class="card-title">Portefeuille applicatif</h2>
+            <p class="card-subtitle">Vue agrégée par application : volume et avancement du traitement de la dette.</p>
+            {% if not portfolio_rows %}
+            <div class="empty-state">Aucune application enregistrée.</div>
+            {% else %}
+            <div style="overflow-x:auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Application</th>
+                            <th>Socle / Framework</th>
+                            <th>Nb dettes</th>
+                            <th>Charge totale</th>
+                            <th>Ouvertes</th>
+                            <th>En cours</th>
+                            <th>Résolues</th>
+                            <th>En retard</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in portfolio_rows %}
+                        {% set p = row.project %}
+                        {% set status_color = '#157A5C' if p.app_status == 'En production' else ('#B5730A' if
+                        p.app_status in ['En développement','En maintenance'] else ('#94A3B8' if p.app_status ==
+                        'Décommissionnée' else 'var(--bp-blue)')) %}
+                        <tr>
+                            <td>
+                                <div style="display:flex; align-items:center; gap:6px;">
+                                    <span
+                                        style="width:7px; height:7px; border-radius:50%; background:{{ status_color }}; flex-shrink:0;"></span>
+                                    <span class="title-cell">{{ p.name }}</span>
+                                    {% if p.is_pilot %}<span class="pill pill-pilot">Pilote</span>{% endif %}
+                                </div>
+                                <div style="font-size:11px; color:var(--muted); margin-top:2px;">{{ p.app_status }}
+                                </div>
+                            </td>
+                            <td style="font-size:12px; color:var(--muted);">
+                                {{ p.socle or '—' }}<br>{{ p.framework or '—' }}
+                            </td>
+                            <td class="tabular">{{ row.debt_count }}</td>
+                            <td class="tabular" style="font-weight:600;">{{ row.total_cost }}j</td>
+                            <td class="tabular">{{ row.open_count }}</td>
+                            <td class="tabular">{{ row.in_progress_count }}</td>
+                            <td class="tabular">{{ row.resolved_count }}</td>
+                            <td class="tabular"
+                                style="{{ 'color:var(--danger); font-weight:700;' if row.overdue_count > 0 else '' }}">
+                                {{ row.overdue_count }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- ONGLET 5 : ALERTES -->
+    <div id="tab-alerts" style="display:none;">
+        <div class="card">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
+                <div>
+                    <h2 class="card-title">Alertes</h2>
+                    <p class="card-subtitle">Échéances dépassées, échéances proches (moins de {{ soon_days }} jours), et
+                        dettes pilotes ouvertes depuis plus de {{ stale_pilot_days }} jours.</p>
+                </div>
+                <div style="text-align:right;">
+                    <button type="button" class="btn-secondary" style="width:auto; padding:9px 16px;"
+                        onclick="sendSlackAlert()">Envoyer sur Slack</button>
+                    {% if not slack_configured %}<div style="font-size:10.5px; color:var(--muted); margin-top:4px;">
+                        Webhook non configuré</div>{% endif %}
+                </div>
+            </div>
+            <p id="slackAlertMessage" style="font-size:12px; margin-top:8px; font-weight:600;"></p>
+
+            {% if not alerts_overdue and not alerts_soon and not alerts_stale_pilot %}
+            <div class="empty-state" style="margin-top:10px;">Aucune alerte active. Tout est sous contrôle. 👍</div>
+            {% else %}
+
+            {% if alerts_overdue %}
+            <h3 style="font-size:13px; font-weight:700; color:var(--danger); margin:20px 0 10px;">🔴 {{
+                alerts_overdue|length }} dette(s) en retard</h3>
+            <div style="display:flex; flex-direction:column; gap:8px;">
+                {% for d in alerts_overdue %}
+                <div class="plan-card">
+                    <div>
+                        <span class="pill pill-cat">{{ d.project.name if d.project else "Inconnu" }}</span>
+                        <span style="font-weight:700; font-size:13px; margin-left:6px;">{{ d.title }}</span>
+                        <div class="plan-meta"><span>Responsable : <strong>{{ d.assignee or 'Non assigné'
+                                    }}</strong></span></div>
+                    </div>
+                    <div class="plan-due-date plan-overdue">{{ d.target_date.strftime("%Y-%m-%d") }}</div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if alerts_soon %}
+            <h3 style="font-size:13px; font-weight:700; color:var(--warning); margin:20px 0 10px;">🟠 {{
+                alerts_soon|length }} échéance(s) proche(s)</h3>
+            <div style="display:flex; flex-direction:column; gap:8px;">
+                {% for d in alerts_soon %}
+                <div class="plan-card">
+                    <div>
+                        <span class="pill pill-cat">{{ d.project.name if d.project else "Inconnu" }}</span>
+                        <span style="font-weight:700; font-size:13px; margin-left:6px;">{{ d.title }}</span>
+                        <div class="plan-meta"><span>Responsable : <strong>{{ d.assignee or 'Non assigné'
+                                    }}</strong></span></div>
+                    </div>
+                    <div class="plan-due-date">{{ d.target_date.strftime("%Y-%m-%d") }}</div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if alerts_stale_pilot %}
+            <h3 style="font-size:13px; font-weight:700; color:var(--bp-blue); margin:20px 0 10px;">🔵 {{
+                alerts_stale_pilot|length }} dette(s) pilote(s) bloquée(s)</h3>
+            <div style="display:flex; flex-direction:column; gap:8px;">
+                {% for d in alerts_stale_pilot %}
+                <div class="plan-card">
+                    <div>
+                        <span class="pill pill-cat">{{ d.project.name if d.project else "Inconnu" }}</span>
+                        <span class="pill pill-pilot">Pilote</span>
+                        <span style="font-weight:700; font-size:13px; margin-left:6px;">{{ d.title }}</span>
+                        <div class="plan-meta"><span>Responsable : <strong>{{ d.assignee or 'Non assigné'
+                                    }}</strong></span></div>
+                    </div>
+                    <div class="plan-due-label">Ouverte depuis le</div>
+                    <div class="plan-due-date">{{ (d.start_date or d.created_at).strftime("%Y-%m-%d") }}</div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- ONGLET 6 : HISTORIQUE -->
+    <div id="tab-history" style="display:none;">
+        <div class="card">
+            <h2 class="card-title">Historique des actions</h2>
+            <p class="card-subtitle">Les 200 dernières actions, les plus récentes en premier.</p>
+            {% if not recent_audit_log %}
+            <div class="empty-state">Aucune action enregistrée pour le moment.</div>
+            {% else %}
+            <div style="overflow-x:auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Utilisateur</th>
+                            <th>Élément</th>
+                            <th>Action</th>
+                            <th>Détails</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for entry in recent_audit_log %}
+                        <tr>
+                            <td style="font-size:12px; color:var(--muted); white-space:nowrap;">{{
+                                entry.timestamp.strftime("%Y-%m-%d %H:%M") }}</td>
+                            <td style="font-size:12.5px; font-weight:600;">{{ entry.username }}</td>
+                            <td style="font-size:12.5px;">
+                                <span class="pill pill-cat">{{ entry.entity_type }}</span>
+                                {{ entry.entity_name }}
+                            </td>
+                            <td style="font-size:12.5px;">{{ entry.action }}</td>
+                            <td style="font-size:12px; color:var(--muted);">{{ entry.details or '' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- ONGLET 7 : STATISTIQUES -->
     <div id="tab-stats" style="display:none;">
         {% if not debts %}
         <div class="card">
@@ -1156,6 +1376,42 @@
             } else {
                 summary.innerHTML = `<strong>${visibleCount}</strong> dette(s) affichée(s) sur ${totalCount} — charge filtrée : <strong>${visibleCost}</strong> jours`;
             }
+
+            syncFiltersToUrl();
+        }
+
+        function syncFiltersToUrl() {
+            const params = new URLSearchParams(window.location.search);
+            const map = {
+                search: document.getElementById('filterSearch').value.trim(),
+                project: document.getElementById('filterProject').value,
+                appStatus: document.getElementById('filterAppStatus').value,
+                socle: document.getElementById('filterSocle').value,
+                framework: document.getElementById('filterFramework').value,
+                category: document.getElementById('filterCategory').value,
+                impact: document.getElementById('filterImpact').value,
+                status: document.getElementById('filterStatus').value,
+                pilotOnly: document.getElementById('filterPilotOnly').checked ? '1' : '',
+            };
+            Object.entries(map).forEach(([key, value]) => {
+                if (value) params.set(key, value); else params.delete(key);
+            });
+            history.replaceState(null, '', '?' + params.toString());
+        }
+
+        function loadFiltersFromUrl() {
+            const params = new URLSearchParams(window.location.search);
+            if (params.has('search')) document.getElementById('filterSearch').value = params.get('search');
+            if (params.has('project')) document.getElementById('filterProject').value = params.get('project');
+            if (params.has('appStatus')) document.getElementById('filterAppStatus').value = params.get('appStatus');
+            if (params.has('socle')) document.getElementById('filterSocle').value = params.get('socle');
+            if (params.has('framework')) document.getElementById('filterFramework').value = params.get('framework');
+            if (params.has('category')) document.getElementById('filterCategory').value = params.get('category');
+            if (params.has('impact')) document.getElementById('filterImpact').value = params.get('impact');
+            if (params.has('status')) document.getElementById('filterStatus').value = params.get('status');
+            if (params.get('pilotOnly') === '1') document.getElementById('filterPilotOnly').checked = true;
+            const tab = params.get('tab');
+            if (tab && tab !== 'register') switchTab(tab);
         }
 
         function resetFilters() {
@@ -1171,9 +1427,67 @@
             applyFilters();
         }
 
+        // --- Tri des colonnes du registre ---
+        const IMPACT_RANK = { 'Faible': 0, 'Moyen': 1, 'Élevé': 2 };
+        const STATUS_RANK = { 'Ouverte': 0, 'En cours': 1, 'Résolue': 2 };
+        let currentSort = { key: null, dir: 1 };
+
+        function sortTable(key) {
+            const tbody = document.getElementById('debtsTableBody');
+            const rows = Array.from(tbody.querySelectorAll('tr[data-project]'));
+            if (!rows.length) return;
+
+            if (currentSort.key === key) {
+                currentSort.dir *= -1;
+            } else {
+                currentSort = { key, dir: 1 };
+            }
+
+            const getValue = (row) => {
+                if (key === 'cost') return parseFloat(row.dataset.cost || '0');
+                if (key === 'impact') return IMPACT_RANK[row.dataset.impact] ?? -1;
+                if (key === 'status') return STATUS_RANK[row.dataset.status] ?? -1;
+                if (key === 'title') return row.dataset.title || '';
+                return '';
+            };
+
+            rows.sort((a, b) => {
+                const va = getValue(a), vb = getValue(b);
+                if (va < vb) return -1 * currentSort.dir;
+                if (va > vb) return 1 * currentSort.dir;
+                return 0;
+            });
+            rows.forEach(row => tbody.appendChild(row));
+
+            document.querySelectorAll('th.sortable .sort-arrow').forEach(el => el.innerText = '');
+            const activeHeader = document.querySelector(`th.sortable[data-sort-key="${key}"] .sort-arrow`);
+            if (activeHeader) activeHeader.innerText = currentSort.dir === 1 ? '▲' : '▼';
+        }
+
+        // --- Export du registre (respecte les filtres actifs) ---
+        function exportRegistre(format) {
+            const rows = document.querySelectorAll('#debtsTableBody tr[data-project]:not(.filtered-out)');
+            if (!rows.length) {
+                alert("Aucune dette à exporter avec les filtres actuels.");
+                return;
+            }
+            const ids = Array.from(rows).map(r => r.dataset.id).join(',');
+            window.location.href = `/api/debts/export?ids=${ids}&format=${format}`;
+        }
+
         function switchTab(tab) {
-            const views = { register: document.getElementById('tab-register'), planning: document.getElementById('tab-planning'), gantt: document.getElementById('tab-gantt'), stats: document.getElementById('tab-stats') };
-            const btns = { register: document.getElementById('btn-register'), planning: document.getElementById('btn-planning'), gantt: document.getElementById('btn-gantt'), stats: document.getElementById('btn-stats') };
+            const views = {
+                register: document.getElementById('tab-register'), planning: document.getElementById('tab-planning'),
+                gantt: document.getElementById('tab-gantt'), portfolio: document.getElementById('tab-portfolio'),
+                alerts: document.getElementById('tab-alerts'), history: document.getElementById('tab-history'),
+                stats: document.getElementById('tab-stats'),
+            };
+            const btns = {
+                register: document.getElementById('btn-register'), planning: document.getElementById('btn-planning'),
+                gantt: document.getElementById('btn-gantt'), portfolio: document.getElementById('btn-portfolio'),
+                alerts: document.getElementById('btn-alerts'), history: document.getElementById('btn-history'),
+                stats: document.getElementById('btn-stats'),
+            };
 
             Object.keys(views).forEach(key => {
                 views[key].style.display = (key === tab) ? (key === 'register' ? 'grid' : 'block') : 'none';
@@ -1182,6 +1496,10 @@
 
             if (tab === 'stats') initCharts();
             if (tab === 'gantt') initGantt();
+
+            const params = new URLSearchParams(window.location.search);
+            params.set('tab', tab);
+            history.replaceState(null, '', '?' + params.toString());
         }
 
         function escapeHtml(str) {
@@ -1420,6 +1738,21 @@
             });
         }
 
+        async function sendSlackAlert() {
+            const msgEl = document.getElementById('slackAlertMessage');
+            msgEl.style.color = 'var(--muted)';
+            msgEl.innerText = 'Envoi en cours…';
+            try {
+                const res = await fetch('/api/alerts/send', { method: 'POST' });
+                const data = await res.json();
+                msgEl.style.color = data.sent ? 'var(--success)' : 'var(--danger)';
+                msgEl.innerText = data.message;
+            } catch (err) {
+                msgEl.style.color = 'var(--danger)';
+                msgEl.innerText = "Erreur réseau lors de l'envoi.";
+            }
+        }
+
         async function uploadFile() {
             const fileInput = document.getElementById('fileInput');
             const file = fileInput.files[0];
@@ -1448,6 +1781,7 @@
             }
         }
 
+        loadFiltersFromUrl();
         applyFilters();
     </script>
 </body>
