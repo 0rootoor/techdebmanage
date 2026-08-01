@@ -424,6 +424,72 @@
             font-size: 13.5px;
         }
 
+        /* Cartes application (onglet Applications) */
+        .app-card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 14px;
+        }
+
+        .app-card {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            background: white;
+        }
+
+        .app-card-name {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--bp-navy);
+        }
+
+        .app-card-desc {
+            font-size: 12px;
+            color: var(--muted);
+            margin: 8px 0 0;
+            line-height: 1.5;
+        }
+
+        .app-card-meta {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+        }
+
+        .app-card-meta-label {
+            display: block;
+            font-size: 10.5px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .app-card-meta-value {
+            display: block;
+            font-size: 12.5px;
+            font-weight: 600;
+            color: var(--ink);
+            margin-top: 2px;
+        }
+
+        .app-card-stats {
+            display: flex;
+            gap: 14px;
+            margin-top: 12px;
+            font-size: 12px;
+            color: var(--muted);
+            flex-wrap: wrap;
+        }
+
+        .app-card-stats .tabular {
+            font-weight: 700;
+            color: var(--bp-navy);
+        }
+
         /* Barre de filtres */
         .filter-bar {
             display: flex;
@@ -668,6 +734,7 @@
             <button onclick="switchTab('register')" id="btn-register" class="tab-btn active">Registre & Saisie</button>
             <button onclick="switchTab('planning')" id="btn-planning" class="tab-btn">Planning & Échéances</button>
             <button onclick="switchTab('gantt')" id="btn-gantt" class="tab-btn">Vue Gantt</button>
+            <button onclick="switchTab('applications')" id="btn-applications" class="tab-btn">Applications</button>
             <button onclick="switchTab('portfolio')" id="btn-portfolio" class="tab-btn">Portefeuille</button>
             <button onclick="switchTab('alerts')" id="btn-alerts" class="tab-btn">Alertes{% if (alerts_overdue|length +
                 alerts_soon|length + alerts_stale_pilot|length) > 0 %} <span
@@ -1043,7 +1110,68 @@
         </div>
     </div>
 
-    <!-- ONGLET 4 : PORTEFEUILLE APPLICATIF -->
+    <!-- ONGLET 4 : APPLICATIONS (fiche complète) -->
+    <div id="tab-applications" style="display:none;">
+        <div class="card">
+            <h2 class="card-title">Applications</h2>
+            <p class="card-subtitle">Fiche complète de chaque application : statut, socle technique, framework,
+                description et volume de dette associé.</p>
+
+            {% if not portfolio_rows %}
+            <div class="empty-state">Aucune application enregistrée.</div>
+            {% else %}
+            <div class="app-card-grid">
+                {% for row in portfolio_rows %}
+                {% set p = row.project %}
+                {% set status_color = '#157A5C' if p.app_status == 'En production' else ('#B5730A' if p.app_status in
+                ['En développement','En maintenance'] else ('#94A3B8' if p.app_status == 'Décommissionnée' else
+                'var(--bp-blue)')) %}
+                <div class="app-card">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+                        <div style="display:flex; align-items:center; gap:7px; flex-wrap:wrap;">
+                            <span
+                                style="width:8px; height:8px; border-radius:50%; background:{{ status_color }}; flex-shrink:0;"></span>
+                            <span class="app-card-name">{{ p.name }}</span>
+                            {% if p.is_pilot %}<span class="pill pill-pilot">Pilote</span>{% endif %}
+                        </div>
+                        <button type="button"
+                            onclick='openEditProject({{ p.id }}, {{ p.name|tojson|e }}, {{ (p.description or "")|tojson|e }}, {{ (p.is_pilot)|tojson }}, {{ p.app_status|tojson|e }}, {{ (p.socle or "")|tojson|e }}, {{ (p.framework or "")|tojson|e }})'
+                            title="Modifier l'application"
+                            style="border:none; background:none; cursor:pointer; color:var(--muted); font-size:13px; padding:0; flex-shrink:0;">✏️</button>
+                    </div>
+
+                    <div style="font-size:11px; font-weight:600; color:{{ status_color }}; margin-top:6px;">{{
+                        p.app_status }}</div>
+
+                    {% if p.description %}
+                    <p class="app-card-desc">{{ p.description }}</p>
+                    {% endif %}
+
+                    <div class="app-card-meta">
+                        <div>
+                            <span class="app-card-meta-label">Socle</span>
+                            <span class="app-card-meta-value">{{ p.socle or '—' }}</span>
+                        </div>
+                        <div>
+                            <span class="app-card-meta-label">Framework</span>
+                            <span class="app-card-meta-value">{{ p.framework or '—' }}</span>
+                        </div>
+                    </div>
+
+                    <div class="app-card-stats">
+                        <div><span class="tabular">{{ row.debt_count }}</span> dette(s)</div>
+                        <div><span class="tabular">{{ row.total_cost }}</span>j de charge</div>
+                        {% if row.overdue_count > 0 %}<div style="color:var(--danger); font-weight:700;">{{
+                            row.overdue_count }} en retard</div>{% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- ONGLET 5 : PORTEFEUILLE APPLICATIF -->
     <div id="tab-portfolio" style="display:none;">
         <div class="card">
             <h2 class="card-title">Portefeuille applicatif</h2>
@@ -1478,13 +1606,15 @@
         function switchTab(tab) {
             const views = {
                 register: document.getElementById('tab-register'), planning: document.getElementById('tab-planning'),
-                gantt: document.getElementById('tab-gantt'), portfolio: document.getElementById('tab-portfolio'),
+                gantt: document.getElementById('tab-gantt'), applications: document.getElementById('tab-applications'),
+                portfolio: document.getElementById('tab-portfolio'),
                 alerts: document.getElementById('tab-alerts'), history: document.getElementById('tab-history'),
                 stats: document.getElementById('tab-stats'),
             };
             const btns = {
                 register: document.getElementById('btn-register'), planning: document.getElementById('btn-planning'),
-                gantt: document.getElementById('btn-gantt'), portfolio: document.getElementById('btn-portfolio'),
+                gantt: document.getElementById('btn-gantt'), applications: document.getElementById('btn-applications'),
+                portfolio: document.getElementById('btn-portfolio'),
                 alerts: document.getElementById('btn-alerts'), history: document.getElementById('btn-history'),
                 stats: document.getElementById('btn-stats'),
             };
