@@ -12,13 +12,15 @@ import io
 import json
 import os
 import urllib.request
+import hashlib
+import secrets
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 # Jinja2Templates active déjà l'autoescape HTML par défaut pour les fichiers .html.
 # On ajoute un filtre tojson pour pouvoir injecter des valeurs en toute sécurité
 # dans les attributs onclick (échappées ensuite en HTML via |e).
-templates.env.filters["tojson"] = lambda value: json.dumps(value, ensure_ascii=False)
+templates.env.filters["tojson"] = lambda value: json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
 
 # Configuration de la base de données SQLite
 DATABASE_URL = "sqlite:///./tech_debt_v4.db"
@@ -55,6 +57,8 @@ class TechDebtModel(Base):
     
     project_id = Column(Integer, ForeignKey("projects.id"))
     project = relationship("ProjectModel", back_populates="debts")
+    comments = relationship("CommentModel", back_populates="debt", cascade="all, delete-orphan", order_by="CommentModel.created_at")
+    links = relationship("DebtLinkModel", back_populates="debt", cascade="all, delete-orphan")
 
 class AuditLogModel(Base):
     __tablename__ = "audit_log"
@@ -65,6 +69,33 @@ class AuditLogModel(Base):
     entity_name = Column(String)
     action = Column(String)        # "Création", "Modification", "Suppression", "Changement de statut"
     details = Column(String, nullable=True)
+
+class UserModel(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    password_hash = Column(String)
+    role = Column(String, default="contributeur")  # "admin", "contributeur", "lecture_seule"
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class CommentModel(Base):
+    __tablename__ = "comments"
+    id = Column(Integer, primary_key=True, index=True)
+    debt_id = Column(Integer, ForeignKey("tech_debts.id"))
+    username = Column(String)
+    content = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    debt = relationship("TechDebtModel", back_populates="comments")
+
+class DebtLinkModel(Base):
+    __tablename__ = "debt_links"
+    id = Column(Integer, primary_key=True, index=True)
+    debt_id = Column(Integer, ForeignKey("tech_debts.id"))
+    label = Column(String)   # ex: "Jira TECH-123", "PR #456"
+    url = Column(String)
+
+    debt = relationship("TechDebtModel", back_populates="links")
 
 Base.metadata.create_all(bind=engine)
 
@@ -96,20 +127,42 @@ with engine.connect() as conn:
 app = FastAPI(title="Gestion Avancée de la Dette Technique")
 
 # --- Authentification ---
-# Authentification minimale par mot de passe partagé + session signée (cookie).
-# Adaptée à un usage en petite équipe interne. Pour un déploiement plus large
-# (plusieurs équipes, traçabilité fine par utilisateur, SSO...), il faudra
-# remplacer ceci par une vraie gestion de comptes (ex: FastAPI Users, SSO d'entreprise).
-APP_PASSWORD = os.environ.get("TECHDEBT_APP_PASSWORD", "changeme123")
+# Comptes individuels avec rôles (admin / contributeur / lecture_seule), mots de passe
+# hachés (PBKDF2-HMAC-SHA256, sans dépendance externe) + session signée (cookie).
+# Pour un déploiement au-delà d'une petite équipe interne, il faudra remplacer ceci
+# par une vraie IAM d'entreprise (SSO/LDAP/OAuth).
 SESSION_SECRET_KEY = os.environ.get("TECHDEBT_SECRET_KEY", "dev-secret-key-change-in-production")
-if APP_PASSWORD == "changeme123":
-    print("⚠️  ATTENTION : mot de passe par défaut utilisé. Définis la variable d'environnement "
-          "TECHDEBT_APP_PASSWORD avant tout déploiement au-delà de ton poste.")
+DEFAULT_ADMIN_PASSWORD = os.environ.get("TECHDEBT_ADMIN_PASSWORD", "changeme123")
 if SESSION_SECRET_KEY == "dev-secret-key-change-in-production":
     print("⚠️  ATTENTION : clé de session par défaut utilisée. Définis la variable d'environnement "
           "TECHDEBT_SECRET_KEY avant tout déploiement au-delà de ton poste.")
 
+ROLES = ["admin", "contributeur", "lecture_seule"]
+ROLE_LABELS = {"admin": "Administrateur", "contributeur": "Contributeur", "lecture_seule": "Lecture seule"}
+
+def hash_password(password: str, salt: str = None) -> str:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 200_000)
+    return f"{salt}${digest.hex()}"
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        salt, _ = stored_hash.split("$", 1)
+    except ValueError:
+        return False
+    return secrets.compare_digest(hash_password(password, salt), stored_hash)
+
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY, session_cookie="techdebt_session")
+
+# Bootstrap : crée un compte admin par défaut si aucun utilisateur n'existe encore.
+with SessionLocal() as _bootstrap_db:
+    if _bootstrap_db.query(UserModel).count() == 0:
+        _bootstrap_db.add(UserModel(username="admin", password_hash=hash_password(DEFAULT_ADMIN_PASSWORD), role="admin"))
+        _bootstrap_db.commit()
+        if DEFAULT_ADMIN_PASSWORD == "changeme123":
+            print("⚠️  ATTENTION : compte admin créé avec le mot de passe par défaut 'changeme123' "
+                  "(identifiant : admin). Change-le dès la première connexion, ou définis "
+                  "TECHDEBT_ADMIN_PASSWORD avant le premier démarrage.")
 
 # --- Alertes Slack (optionnel) ---
 # Si la variable d'environnement TECHDEBT_SLACK_WEBHOOK_URL est définie, un bouton
@@ -130,10 +183,25 @@ def send_slack_message(text: str) -> bool:
         return False
 
 def require_api_auth(request: Request) -> str:
-    """Dépendance pour les endpoints API : lève une 401 JSON si non connecté."""
+    """Dépendance pour les endpoints API en lecture ou pour tout utilisateur connecté : lève une 401 JSON si non connecté."""
     if not request.session.get("authenticated"):
         raise HTTPException(status_code=401, detail="Authentification requise")
     return request.session.get("username", "Utilisateur")
+
+def require_contributor(request: Request) -> str:
+    """Dépendance pour les actions d'écriture (créer/modifier/supprimer dettes, commentaires, liens...).
+    Les comptes en lecture seule sont bloqués."""
+    username = require_api_auth(request)
+    if request.session.get("role") == "lecture_seule":
+        raise HTTPException(status_code=403, detail="Ton compte est en lecture seule : cette action n'est pas autorisée.")
+    return username
+
+def require_admin(request: Request) -> str:
+    """Dépendance pour les actions d'administration (suppression d'application, gestion des utilisateurs)."""
+    username = require_api_auth(request)
+    if request.session.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Cette action est réservée aux administrateurs.")
+    return username
 
 def log_action(db: Session, username: str, entity_type: str, entity_name: str, action: str, details: str = None):
     """Enregistre une entrée dans l'historique. Ne fait pas de commit : à inclure dans la même transaction que l'action elle-même."""
@@ -154,14 +222,17 @@ def login_page(request: Request):
     return templates.TemplateResponse("login.html", {"request": request, "error": None})
 
 @app.post("/login")
-def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
-    if password == APP_PASSWORD:
+def login_submit(request: Request, username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+    user = db.query(UserModel).filter(UserModel.username == username.strip()).first()
+    if user and verify_password(password, user.password_hash):
         request.session["authenticated"] = True
-        request.session["username"] = username.strip() or "Utilisateur"
+        request.session["username"] = user.username
+        request.session["role"] = user.role
+        request.session["user_id"] = user.id
         return RedirectResponse(url="/", status_code=303)
     return templates.TemplateResponse(
         "login.html",
-        {"request": request, "error": "Mot de passe incorrect."},
+        {"request": request, "error": "Identifiant ou mot de passe incorrect."},
         status_code=401,
     )
 
@@ -169,6 +240,71 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
 def logout(request: Request):
     request.session.clear()
     return RedirectResponse(url="/login", status_code=303)
+
+# --- API Endpoints : Utilisateurs (admin uniquement) ---
+
+@app.post("/api/users")
+def create_user_endpoint(
+    username: str,
+    password: str,
+    role: str = "contributeur",
+    db: Session = Depends(get_db),
+    admin_user: str = Depends(require_admin),
+):
+    username = username.strip()
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Identifiant et mot de passe requis")
+    if role not in ROLES:
+        raise HTTPException(status_code=400, detail="Rôle invalide")
+    if db.query(UserModel).filter(UserModel.username == username).first():
+        raise HTTPException(status_code=400, detail="Cet identifiant existe déjà")
+    db_user = UserModel(username=username, password_hash=hash_password(password), role=role)
+    db.add(db_user)
+    log_action(db, admin_user, "Utilisateur", username, "Création", f"Rôle : {ROLE_LABELS.get(role, role)}")
+    db.commit()
+    return {"message": "Utilisateur créé avec succès"}
+
+@app.put("/api/users/{user_id}")
+def update_user_endpoint(
+    user_id: int,
+    role: str = None,
+    password: str = None,
+    db: Session = Depends(get_db),
+    admin_user: str = Depends(require_admin),
+):
+    db_user = db.query(UserModel).filter(UserModel.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    if role is not None:
+        if role not in ROLES:
+            raise HTTPException(status_code=400, detail="Rôle invalide")
+        if db_user.role == "admin" and role != "admin":
+            remaining_admins = db.query(UserModel).filter(UserModel.role == "admin", UserModel.id != user_id).count()
+            if remaining_admins == 0:
+                raise HTTPException(status_code=400, detail="Impossible de rétrograder le dernier administrateur")
+        db_user.role = role
+    if password:
+        db_user.password_hash = hash_password(password)
+    log_action(db, admin_user, "Utilisateur", db_user.username, "Modification")
+    db.commit()
+    return {"message": "Utilisateur mis à jour"}
+
+@app.delete("/api/users/{user_id}")
+def delete_user_endpoint(user_id: int, request: Request, db: Session = Depends(get_db), admin_user: str = Depends(require_admin)):
+    db_user = db.query(UserModel).filter(UserModel.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    if db_user.id == request.session.get("user_id"):
+        raise HTTPException(status_code=400, detail="Tu ne peux pas supprimer ton propre compte")
+    if db_user.role == "admin":
+        remaining_admins = db.query(UserModel).filter(UserModel.role == "admin", UserModel.id != user_id).count()
+        if remaining_admins == 0:
+            raise HTTPException(status_code=400, detail="Impossible de supprimer le dernier administrateur")
+    name = db_user.username
+    db.delete(db_user)
+    log_action(db, admin_user, "Utilisateur", name, "Suppression")
+    db.commit()
+    return {"message": "Utilisateur supprimé"}
 
 # --- API Endpoints : Projets ---
 
@@ -181,7 +317,7 @@ def create_project_endpoint(
     socle: str = "",
     framework: str = "",
     db: Session = Depends(get_db),
-    user: str = Depends(require_api_auth),
+    user: str = Depends(require_contributor),
 ):
     if not name.strip():
         raise HTTPException(status_code=400, detail="Le nom du projet est requis")
@@ -213,7 +349,7 @@ def update_project_endpoint(
     socle: str = "",
     framework: str = "",
     db: Session = Depends(get_db),
-    user: str = Depends(require_api_auth),
+    user: str = Depends(require_contributor),
 ):
     db_project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
     if not db_project:
@@ -236,7 +372,7 @@ def update_project_endpoint(
     return {"message": "Application mise à jour avec succès"}
 
 @app.delete("/api/projects/{project_id}")
-def delete_project_endpoint(project_id: int, db: Session = Depends(get_db), user: str = Depends(require_api_auth)):
+def delete_project_endpoint(project_id: int, db: Session = Depends(get_db), user: str = Depends(require_admin)):
     db_project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
     if not db_project:
         raise HTTPException(status_code=404, detail="Application non trouvée")
@@ -282,7 +418,7 @@ VALID_DEBT_STATUSES = {"Ouverte", "En cours", "Résolue"}
 async def import_projects(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    user: str = Depends(require_api_auth),
+    user: str = Depends(require_contributor),
 ):
     contents = await file.read()
     try:
@@ -382,7 +518,7 @@ def create_debt_endpoint(
     start_date: str = "",
     target_date: str = "",
     db: Session = Depends(get_db),
-    user: str = Depends(require_api_auth),
+    user: str = Depends(require_contributor),
 ):
     start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
     target = datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else None
@@ -413,7 +549,7 @@ def update_debt_endpoint(
     start_date: str = "",
     target_date: str = "",
     db: Session = Depends(get_db),
-    user: str = Depends(require_api_auth),
+    user: str = Depends(require_contributor),
 ):
     db_debt = db.query(TechDebtModel).filter(TechDebtModel.id == debt_id).first()
     if not db_debt:
@@ -434,7 +570,7 @@ def update_debt_endpoint(
     return {"message": "Dette mise à jour avec succès"}
 
 @app.delete("/api/debts/{debt_id}")
-def delete_debt_endpoint(debt_id: int, db: Session = Depends(get_db), user: str = Depends(require_api_auth)):
+def delete_debt_endpoint(debt_id: int, db: Session = Depends(get_db), user: str = Depends(require_contributor)):
     db_debt = db.query(TechDebtModel).filter(TechDebtModel.id == debt_id).first()
     if not db_debt:
         raise HTTPException(status_code=404, detail="Dette non trouvée")
@@ -445,7 +581,7 @@ def delete_debt_endpoint(debt_id: int, db: Session = Depends(get_db), user: str 
     return {"message": "Dette supprimée"}
 
 @app.patch("/api/debts/{debt_id}/status")
-def update_debt_status(debt_id: int, status: str, db: Session = Depends(get_db), user: str = Depends(require_api_auth)):
+def update_debt_status(debt_id: int, status: str, db: Session = Depends(get_db), user: str = Depends(require_contributor)):
     db_debt = db.query(TechDebtModel).filter(TechDebtModel.id == debt_id).first()
     if not db_debt:
         raise HTTPException(status_code=404, detail="Dette non trouvée")
@@ -454,6 +590,74 @@ def update_debt_status(debt_id: int, status: str, db: Session = Depends(get_db),
     log_action(db, user, "Dette", db_debt.title, "Changement de statut", f"{old_status} → {status}")
     db.commit()
     return {"message": "Statut mis à jour"}
+
+
+# --- API Endpoints : Commentaires et liens externes (par dette) ---
+
+@app.get("/api/debts/{debt_id}/comments")
+def get_comments(debt_id: int, db: Session = Depends(get_db), user: str = Depends(require_api_auth)):
+    debt = db.query(TechDebtModel).filter(TechDebtModel.id == debt_id).first()
+    if not debt:
+        raise HTTPException(status_code=404, detail="Dette non trouvée")
+    return [
+        {"id": c.id, "username": c.username, "content": c.content, "created_at": c.created_at.strftime("%Y-%m-%d %H:%M")}
+        for c in debt.comments
+    ]
+
+@app.post("/api/debts/{debt_id}/comments")
+def add_comment(debt_id: int, content: str, db: Session = Depends(get_db), user: str = Depends(require_contributor)):
+    debt = db.query(TechDebtModel).filter(TechDebtModel.id == debt_id).first()
+    if not debt:
+        raise HTTPException(status_code=404, detail="Dette non trouvée")
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="Le commentaire ne peut pas être vide")
+    comment = CommentModel(debt_id=debt_id, username=user, content=content.strip())
+    db.add(comment)
+    log_action(db, user, "Dette", debt.title, "Commentaire", content.strip()[:100])
+    db.commit()
+    return {"message": "Commentaire ajouté"}
+
+@app.delete("/api/comments/{comment_id}")
+def delete_comment(comment_id: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_contributor)):
+    comment = db.query(CommentModel).filter(CommentModel.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Commentaire non trouvé")
+    if comment.username != user and request.session.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Tu ne peux supprimer que tes propres commentaires")
+    db.delete(comment)
+    db.commit()
+    return {"message": "Commentaire supprimé"}
+
+@app.get("/api/debts/{debt_id}/links")
+def get_links(debt_id: int, db: Session = Depends(get_db), user: str = Depends(require_api_auth)):
+    debt = db.query(TechDebtModel).filter(TechDebtModel.id == debt_id).first()
+    if not debt:
+        raise HTTPException(status_code=404, detail="Dette non trouvée")
+    return [{"id": l.id, "label": l.label, "url": l.url} for l in debt.links]
+
+@app.post("/api/debts/{debt_id}/links")
+def add_link(debt_id: int, label: str, url: str, db: Session = Depends(get_db), user: str = Depends(require_contributor)):
+    debt = db.query(TechDebtModel).filter(TechDebtModel.id == debt_id).first()
+    if not debt:
+        raise HTTPException(status_code=404, detail="Dette non trouvée")
+    if not label.strip() or not url.strip():
+        raise HTTPException(status_code=400, detail="Le libellé et l'URL sont requis")
+    if not (url.strip().startswith("http://") or url.strip().startswith("https://")):
+        raise HTTPException(status_code=400, detail="L'URL doit commencer par http:// ou https://")
+    link = DebtLinkModel(debt_id=debt_id, label=label.strip(), url=url.strip())
+    db.add(link)
+    log_action(db, user, "Dette", debt.title, "Lien ajouté", label.strip())
+    db.commit()
+    return {"message": "Lien ajouté"}
+
+@app.delete("/api/links/{link_id}")
+def delete_link(link_id: int, db: Session = Depends(get_db), user: str = Depends(require_contributor)):
+    link = db.query(DebtLinkModel).filter(DebtLinkModel.id == link_id).first()
+    if not link:
+        raise HTTPException(status_code=404, detail="Lien non trouvé")
+    db.delete(link)
+    db.commit()
+    return {"message": "Lien supprimé"}
 
 
 @app.get("/api/debts/export")
@@ -519,7 +723,7 @@ def export_debts(
 
 
 @app.post("/api/alerts/send")
-def send_alerts_endpoint(db: Session = Depends(get_db), user: str = Depends(require_api_auth)):
+def send_alerts_endpoint(db: Session = Depends(get_db), user: str = Depends(require_contributor)):
     if not SLACK_WEBHOOK_URL:
         return {
             "sent": False,
@@ -567,9 +771,13 @@ def send_alerts_endpoint(db: Session = Depends(get_db), user: str = Depends(requ
 
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request, db: Session = Depends(get_db)):
-    if not request.session.get("authenticated"):
+    if not request.session.get("authenticated") or "role" not in request.session:
+        # "role" absent : session issue de l'ancienne authentification par mot de passe
+        # partagé (avant la refonte en comptes individuels) -> on force une reconnexion.
+        request.session.clear()
         return RedirectResponse(url="/login", status_code=303)
     current_user = request.session.get("username", "Utilisateur")
+    current_role = request.session.get("role", "lecture_seule")
 
     projects = db.query(ProjectModel).order_by(ProjectModel.is_pilot.desc(), ProjectModel.name).all()
     debts = db.query(TechDebtModel).all()
@@ -674,12 +882,16 @@ def read_root(request: Request, db: Session = Depends(get_db)):
 
     # Historique récent (200 dernières actions, les plus récentes en premier)
     recent_audit_log = db.query(AuditLogModel).order_by(AuditLogModel.timestamp.desc()).limit(200).all()
+    all_users = db.query(UserModel).order_by(UserModel.username).all() if current_role == "admin" else []
 
     return templates.TemplateResponse(
         "index.html",
         {
             "request": request,
             "current_user": current_user,
+            "current_role": current_role,
+            "role_labels": ROLE_LABELS,
+            "all_users": all_users,
             "projects": projects,
             "debts": debts,
             "sorted_debts": sorted_debts,

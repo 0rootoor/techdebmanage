@@ -1,2 +1,6 @@
 *.db
 .env*
+*.cpyth*
+__pycache__*
+*.db.md
+*.pyc
