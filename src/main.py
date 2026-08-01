@@ -235,6 +235,19 @@ def update_project_endpoint(
     db.commit()
     return {"message": "Application mise à jour avec succès"}
 
+@app.delete("/api/projects/{project_id}")
+def delete_project_endpoint(project_id: int, db: Session = Depends(get_db), user: str = Depends(require_api_auth)):
+    db_project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="Application non trouvée")
+    name = db_project.name
+    debt_count = db.query(TechDebtModel).filter(TechDebtModel.project_id == project_id).count()
+    db.delete(db_project)  # cascade="all, delete-orphan" supprime aussi les dettes associées
+    log_action(db, user, "Application", name, "Suppression",
+               f"{debt_count} dette(s) associée(s) supprimée(s) en cascade" if debt_count else None)
+    db.commit()
+    return {"message": f"Application supprimée" + (f" ainsi que {debt_count} dette(s) associée(s)" if debt_count else "")}
+
 def _clean_str(value):
     """Nettoie une valeur pandas (NaN, float, etc.) en chaîne, ou None si vide."""
     if pd.isna(value):
