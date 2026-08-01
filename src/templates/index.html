@@ -261,6 +261,46 @@
             cursor: pointer;
         }
 
+        .icon-btn {
+            position: relative;
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            margin-left: 2px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            font-size: 13px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            vertical-align: middle;
+            transition: background 0.15s ease;
+        }
+
+        .icon-btn:hover {
+            background: var(--bp-blue-100);
+        }
+
+        .icon-btn-badge {
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            background: var(--bp-navy);
+            color: white;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 1;
+            border-radius: 999px;
+            min-width: 14px;
+            height: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 2px;
+        }
+
         .btn-secondary {
             width: 100%;
             background: white;
@@ -558,23 +598,40 @@
         .link-item,
         .comment-item {
             display: flex;
-            justify-content: space-between;
             align-items: flex-start;
-            gap: 8px;
+            gap: 9px;
             background: var(--bg);
             border-radius: 9px;
-            padding: 8px 10px;
+            padding: 9px 10px;
             font-size: 12.5px;
         }
 
-        .link-item a {
+        .link-icon {
+            font-size: 15px;
+            flex-shrink: 0;
+            line-height: 1.3;
+        }
+
+        .link-item-text {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .link-item-text a {
             color: var(--bp-blue);
             font-weight: 600;
             text-decoration: none;
+            word-break: break-word;
         }
 
-        .link-item a:hover {
+        .link-item-text a:hover {
             text-decoration: underline;
+        }
+
+        .link-item-domain {
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 1px;
         }
 
         .comment-item .comment-body {
@@ -1125,17 +1182,15 @@
                                 </td>
                                 <td style="text-align:right; white-space:nowrap;">
                                     <button type="button" onclick='openDetailsModal({{ d.id }}, {{ d.title|tojson|e }})'
-                                        class="btn-ghost" title="Commentaires et liens"
-                                        style="color:var(--bp-navy); border-color:var(--border);">💬{% if
-                                        (d.comments|length + d.links|length) > 0 %} {{ d.comments|length +
-                                        d.links|length }}{% endif %}</button>
+                                        class="icon-btn" title="Commentaires et liens">💬{% if (d.comments|length +
+                                        d.links|length) > 0 %}<span class="icon-btn-badge">{{ d.comments|length +
+                                            d.links|length }}</span>{% endif %}</button>
                                     {% if current_role != 'lecture_seule' %}
                                     <button
                                         onclick='openEditDebt({{ d.id }}, {{ d.project_id }}, {{ d.title|tojson|e }}, {{ d.category|tojson|e }}, {{ d.impact|tojson|e }}, {{ d.cost_days }}, {{ (d.assignee or "")|tojson|e }}, {{ (d.start_date.strftime("%Y-%m-%d") if d.start_date else "")|tojson|e }}, {{ (d.target_date.strftime("%Y-%m-%d") if d.target_date else "")|tojson|e }})'
-                                        class="btn-ghost"
-                                        style="color:var(--bp-blue); border-color:var(--bp-blue-100);">Modifier</button>
-                                    <button onclick="deleteDebt({{ d.id }})" class="btn-ghost"
-                                        style="color:var(--danger); border-color:var(--danger-bg);">Supprimer</button>
+                                        class="icon-btn" title="Modifier" style="color:var(--bp-blue);">✏️</button>
+                                    <button onclick="deleteDebt({{ d.id }})" class="icon-btn" title="Supprimer"
+                                        style="color:var(--danger);">🗑️</button>
                                     {% endif %}
                                 </td>
                             </tr>
@@ -1263,14 +1318,12 @@
                                 {% if current_role != 'lecture_seule' %}
                                 <button type="button"
                                     onclick='openEditProject({{ p.id }}, {{ p.name|tojson|e }}, {{ (p.description or "")|tojson|e }}, {{ (p.is_pilot)|tojson }}, {{ p.app_status|tojson|e }}, {{ (p.socle or "")|tojson|e }}, {{ (p.framework or "")|tojson|e }})'
-                                    title="Modifier" class="btn-ghost"
-                                    style="color:var(--bp-blue); border-color:var(--bp-blue-100); padding:5px 8px;">✏️</button>
+                                    title="Modifier" class="icon-btn" style="color:var(--bp-blue);">✏️</button>
                                 {% endif %}
                                 {% if current_role == 'admin' %}
                                 <button type="button"
                                     onclick='deleteProject({{ p.id }}, {{ p.name|tojson|e }}, {{ row.debt_count }})'
-                                    title="Supprimer" class="btn-ghost"
-                                    style="color:var(--danger); border-color:var(--danger-bg); padding:5px 8px;">🗑️</button>
+                                    title="Supprimer" class="icon-btn" style="color:var(--danger);">🗑️</button>
                                 {% endif %}
                             </td>
                         </tr>
@@ -2120,6 +2173,26 @@
             currentDetailsDebtId = null;
         }
 
+        function getLinkIcon(url) {
+            const u = url.toLowerCase();
+            if (u.includes('jira') || u.includes('atlassian')) return '🎫';
+            if (u.includes('github.com') && u.includes('/pull/')) return '🔀';
+            if (u.includes('github.com')) return '🐙';
+            if (u.includes('gitlab.com') && (u.includes('/merge_requests/') || u.includes('/-/merge_requests'))) return '🔀';
+            if (u.includes('gitlab.com')) return '🦊';
+            if (u.includes('confluence')) return '📘';
+            if (u.includes('docs.google') || u.includes('sharepoint') || u.includes('.pdf')) return '📄';
+            return '🔗';
+        }
+
+        function getLinkDomain(url) {
+            try {
+                return new URL(url).hostname.replace(/^www\./, '');
+            } catch (err) {
+                return url;
+            }
+        }
+
         async function loadLinks() {
             const container = document.getElementById('linksList');
             container.innerHTML = '<div class="empty-mini">Chargement…</div>';
@@ -2132,7 +2205,11 @@
                 }
                 container.innerHTML = links.map(l => `
                     <div class="link-item">
-                        <a href="${escapeHtmlText(l.url)}" target="_blank" rel="noopener noreferrer">${escapeHtmlText(l.label)}</a>
+                        <span class="link-icon">${getLinkIcon(l.url)}</span>
+                        <div class="link-item-text">
+                            <a href="${escapeHtmlText(l.url)}" target="_blank" rel="noopener noreferrer">${escapeHtmlText(l.label)}</a>
+                            <div class="link-item-domain">${escapeHtmlText(getLinkDomain(l.url))}</div>
+                        </div>
                         ${CURRENT_ROLE !== 'lecture_seule' ? `<button class="item-delete-btn" onclick="deleteLinkUI(${l.id})">Supprimer</button>` : ''}
                     </div>
                 `).join('');
