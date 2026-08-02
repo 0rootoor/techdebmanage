@@ -400,23 +400,102 @@
         <div id="tab-planning" class="card" style="display:none;">
             <h2 class="card-title">Planning de résolution</h2>
             <p class="card-subtitle">Vue chronologique des actions de refactoring planifiées, triée par date cible.</p>
+            
+            <!-- Barre de filtres Planning -->
+            <div class="filter-bar">
+                <input type="text" id="filterPlanningSearch" placeholder="Rechercher (titre, responsable, app)..."
+                    oninput="applyPlanningFilters()" style="flex:1; min-width:180px;" />
+                <select id="filterPlanningProject" onchange="applyPlanningFilters()">
+                    <option value="">Toutes les apps</option>
+                    {% for p in projects %}
+                    <option value="{{ p.name }}">{{ p.name }}</option>
+                    {% endfor %}
+                </select>
+                <select id="filterPlanningAppStatus" onchange="applyPlanningFilters()">
+                    <option value="">Tout statut app</option>
+                    <option value="En projet">En projet</option>
+                    <option value="En développement">En développement</option>
+                    <option value="En production">En production</option>
+                    <option value="En maintenance">En maintenance</option>
+                    <option value="Décommissionnée">Décommissionnée</option>
+                </select>
+                <select id="filterPlanningSocle" onchange="applyPlanningFilters()">
+                    <option value="">Tout socle</option>
+                    {% for s in distinct_socles %}
+                    <option value="{{ s }}">{{ s }}</option>
+                    {% endfor %}
+                </select>
+                <select id="filterPlanningFramework" onchange="applyPlanningFilters()">
+                    <option value="">Tout framework</option>
+                    {% for f in distinct_frameworks %}
+                    <option value="{{ f }}">{{ f }}</option>
+                    {% endfor %}
+                </select>
+                <select id="filterPlanningCategory" onchange="applyPlanningFilters()">
+                    <option value="">Toute catégorie</option>
+                    <option value="Code">Code</option>
+                    <option value="Architecture">Architecture</option>
+                    <option value="Sécurité">Sécurité</option>
+                    <option value="Documentation">Documentation</option>
+                    <option value="Tests">Tests</option>
+                </select>
+                <select id="filterPlanningImpact" onchange="applyPlanningFilters()">
+                    <option value="">Tout impact</option>
+                    <option value="Faible">Faible</option>
+                    <option value="Moyen">Moyen</option>
+                    <option value="Élevé">Élevé</option>
+                </select>
+                <select id="filterPlanningStatus" onchange="applyPlanningFilters()">
+                    <option value="">Tout statut dette</option>
+                    <option value="Ouverte">Ouverte</option>
+                    <option value="En cours">En cours</option>
+                    <option value="Résolue">Résolue</option>
+                </select>
+                <div style="display:flex; align-items:center; gap:5px;">
+                    <label style="font-size:12px; color:var(--muted); white-space:nowrap;">Début après :</label>
+                    <input type="date" id="filterPlanningMinStart" onchange="applyPlanningFilters()" style="width:auto; font-size:12.5px; padding:7px 9px;" />
+                </div>
+                <div style="display:flex; align-items:center; gap:5px;">
+                    <label style="font-size:12px; color:var(--muted); white-space:nowrap;">Cible avant :</label>
+                    <input type="date" id="filterPlanningMaxTarget" onchange="applyPlanningFilters()" style="width:auto; font-size:12.5px; padding:7px 9px;" />
+                </div>
+                <label
+                    style="display:flex; align-items:center; gap:5px; font-size:12.5px; color:var(--muted); white-space:nowrap;">
+                    <input type="checkbox" id="filterPlanningPilotOnly" onchange="applyPlanningFilters()" style="width:auto;" />
+                    Pilotes uniquement
+                </label>
+                <button type="button" class="btn-ghost" onclick="resetPlanningFilters()">Réinitialiser</button>
+            </div>
+            <div id="filterPlanningSummary" class="filter-summary" style="margin-bottom:12px;"></div>
+
             <div style="display:flex; flex-direction:column; gap:10px;">
                 {% if not debts %}
                 <div class="empty-state">Aucune dette à planifier.</div>
                 {% endif %}
                 {% for d in sorted_debts %}
-                {% set is_overdue = d.target_date and d.target_date < today and d.status !='Résolue' %} <div
-                    class="plan-card">
+                {% set is_overdue = d.target_date and d.target_date < today and d.status !='Résolue' %}
+                <div class="plan-card"
+                    data-id="{{ d.id }}"
+                    data-project="{{ d.project.name if d.project else '' }}"
+                    data-socle="{{ d.project.socle if d.project and d.project.socle else '' }}"
+                    data-framework="{{ d.project.framework if d.project and d.project.framework else '' }}"
+                    data-app-status="{{ d.project.app_status if d.project else '' }}"
+                    data-category="{{ d.category }}"
+                    data-impact="{{ d.impact }}"
+                    data-status="{{ d.status }}"
+                    data-pilot="{{ 'true' if d.project and d.project.is_pilot else 'false' }}"
+                    data-start-date="{{ d.start_date.strftime('%Y-%m-%d') if d.start_date else '' }}"
+                    data-target-date="{{ d.target_date.strftime('%Y-%m-%d') if d.target_date else '' }}"
+                    data-search="{{ (d.title ~ ' ' ~ (d.assignee or '') ~ ' ' ~ (d.project.name if d.project else ''))|lower }}"
+                    data-cost="{{ d.cost_days }}">
                     <div>
                         <div style="display:flex; align-items:center; gap:8px;">
                             <span class="pill pill-cat">{{ d.project.name if d.project else "Inconnu" }}</span>
-                            {% if d.project and d.project.is_pilot %}<span class="pill pill-pilot">Pilote</span>{% endif
-                            %}
+                            {% if d.project and d.project.is_pilot %}<span class="pill pill-pilot">Pilote</span>{% endif %}
                             <span style="font-weight:700; font-size:13.5px;">{{ d.title }}</span>
                         </div>
                         <div class="plan-meta">
-                            {% if d.start_date %}<span>Début prév. : <strong>{{ d.start_date.strftime("%Y-%m-%d")
-                                    }}</strong></span>{% endif %}
+                            {% if d.start_date %}<span>Début prév. : <strong>{{ d.start_date.strftime("%Y-%m-%d") }}</strong></span>{% endif %}
                             <span>Charge : <strong class="tabular">{{ d.cost_days }}j</strong></span>
                             <span>Responsable : <strong>{{ d.assignee or 'Non assigné' }}</strong></span>
                             <span>Statut : <strong>{{ d.status }}</strong></span>
@@ -428,9 +507,9 @@
                             {{ d.target_date.strftime("%Y-%m-%d") if d.target_date else "Non planifiée" }}
                         </div>
                     </div>
+                </div>
+                {% endfor %}
             </div>
-            {% endfor %}
-        </div>
     </div>
 
     <!-- ONGLET 3 : GANTT -->
@@ -517,6 +596,40 @@
         <div class="card">
             <h2 class="card-title">Portefeuille applicatif</h2>
             <p class="card-subtitle">Vue agrégée par application : volume et avancement du traitement de la dette.</p>
+            
+            <!-- Barre de filtres Portefeuille -->
+            <div class="filter-bar">
+                <input type="text" id="filterPortfolioSearch" placeholder="Rechercher (nom, description, framework, socle)..."
+                    oninput="applyPortfolioFilters()" style="flex:1; min-width:180px;" />
+                <select id="filterPortfolioAppStatus" onchange="applyPortfolioFilters()">
+                    <option value="">Tout statut app</option>
+                    <option value="En projet">En projet</option>
+                    <option value="En développement">En développement</option>
+                    <option value="En production">En production</option>
+                    <option value="En maintenance">En maintenance</option>
+                    <option value="Décommissionnée">Décommissionnée</option>
+                </select>
+                <select id="filterPortfolioSocle" onchange="applyPortfolioFilters()">
+                    <option value="">Tout socle</option>
+                    {% for s in distinct_socles %}
+                    <option value="{{ s }}">{{ s }}</option>
+                    {% endfor %}
+                </select>
+                <select id="filterPortfolioFramework" onchange="applyPortfolioFilters()">
+                    <option value="">Tout framework</option>
+                    {% for f in distinct_frameworks %}
+                    <option value="{{ f }}">{{ f }}</option>
+                    {% endfor %}
+                </select>
+                <label
+                    style="display:flex; align-items:center; gap:5px; font-size:12.5px; color:var(--muted); white-space:nowrap;">
+                    <input type="checkbox" id="filterPortfolioPilotOnly" onchange="applyPortfolioFilters()" style="width:auto;" />
+                    Pilotes uniquement
+                </label>
+                <button type="button" class="btn-ghost" onclick="resetPortfolioFilters()">Réinitialiser</button>
+            </div>
+            <div id="filterPortfolioSummary" class="filter-summary" style="margin-bottom:12px;"></div>
+
             {% if not portfolio_rows %}
             <div class="empty-state">Aucune application enregistrée.</div>
             {% else %}
@@ -541,7 +654,15 @@
                         {% set status_color = '#157A5C' if p.app_status == 'En production' else ('#B5730A' if
                         p.app_status in ['En développement','En maintenance'] else ('#94A3B8' if p.app_status ==
                         'Décommissionnée' else 'var(--bp-blue)')) %}
-                        <tr>
+                        <tr data-name="{{ p.name|lower }}"
+                            data-description="{{ (p.description or '')|lower }}"
+                            data-socle="{{ p.socle if p.socle else '' }}"
+                            data-framework="{{ p.framework if p.framework else '' }}"
+                            data-app-status="{{ p.app_status }}"
+                            data-pilot="{{ 'true' if p.is_pilot else 'false' }}"
+                            data-search="{{ (p.name ~ ' ' ~ (p.description or '') ~ ' ' ~ (p.socle or '') ~ ' ' ~ (p.framework or ''))|lower }}"
+                            data-debt-count="{{ row.debt_count }}"
+                            data-cost="{{ row.total_cost }}">
                             <td>
                                 <div style="display:flex; align-items:center; gap:6px;">
                                     <span

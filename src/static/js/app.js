@@ -812,5 +812,128 @@ async function deleteCommentUI(commentId) {
     if (res.ok) { await loadComments(); } else { alert("Erreur lors de la suppression."); }
 }
 
+function applyPlanningFilters() {
+    const search = document.getElementById('filterPlanningSearch').value.trim().toLowerCase();
+    const project = document.getElementById('filterPlanningProject').value;
+    const appStatus = document.getElementById('filterPlanningAppStatus').value;
+    const socle = document.getElementById('filterPlanningSocle').value;
+    const framework = document.getElementById('filterPlanningFramework').value;
+    const category = document.getElementById('filterPlanningCategory').value;
+    const impact = document.getElementById('filterPlanningImpact').value;
+    const status = document.getElementById('filterPlanningStatus').value;
+    const minStart = document.getElementById('filterPlanningMinStart').value;
+    const maxTarget = document.getElementById('filterPlanningMaxTarget').value;
+    const pilotOnly = document.getElementById('filterPlanningPilotOnly').checked;
+
+    const cards = document.querySelectorAll('#tab-planning .plan-card');
+    const summary = document.getElementById('filterPlanningSummary');
+    if (cards.length === 0) {
+        if (summary) summary.innerHTML = '';
+        return;
+    }
+    let visibleCount = 0;
+    let visibleCost = 0;
+
+    cards.forEach(card => {
+        const matches = (
+            (!search || card.dataset.search.includes(search)) &&
+            (!project || card.dataset.project === project) &&
+            (!appStatus || card.dataset.appStatus === appStatus) &&
+            (!socle || card.dataset.socle === socle) &&
+            (!framework || card.dataset.framework === framework) &&
+            (!category || card.dataset.category === category) &&
+            (!impact || card.dataset.impact === impact) &&
+            (!status || card.dataset.status === status) &&
+            (!minStart || (card.dataset.startDate && card.dataset.startDate >= minStart)) &&
+            (!maxTarget || (card.dataset.targetDate && card.dataset.targetDate <= maxTarget)) &&
+            (!pilotOnly || card.dataset.pilot === 'true')
+        );
+        card.classList.toggle('filtered-out', !matches);
+        if (matches) {
+            visibleCount++;
+            visibleCost += parseFloat(card.dataset.cost || '0');
+        }
+    });
+
+    const totalCount = cards.length;
+    if (summary) {
+        if (visibleCount === totalCount) {
+            summary.innerHTML = `<strong>${totalCount}</strong> dette(s) au total — charge : <strong>${visibleCost}</strong> jours`;
+        } else {
+            summary.innerHTML = `<strong>${visibleCount}</strong> dette(s) affichée(s) sur ${totalCount} — charge filtrée : <strong>${visibleCost}</strong> jours`;
+        }
+    }
+}
+
+function resetPlanningFilters() {
+    document.getElementById('filterPlanningSearch').value = '';
+    document.getElementById('filterPlanningProject').value = '';
+    document.getElementById('filterPlanningAppStatus').value = '';
+    document.getElementById('filterPlanningSocle').value = '';
+    document.getElementById('filterPlanningFramework').value = '';
+    document.getElementById('filterPlanningCategory').value = '';
+    document.getElementById('filterPlanningImpact').value = '';
+    document.getElementById('filterPlanningStatus').value = '';
+    document.getElementById('filterPlanningMinStart').value = '';
+    document.getElementById('filterPlanningMaxTarget').value = '';
+    document.getElementById('filterPlanningPilotOnly').checked = false;
+    applyPlanningFilters();
+}
+
+function applyPortfolioFilters() {
+    const search = document.getElementById('filterPortfolioSearch').value.trim().toLowerCase();
+    const appStatus = document.getElementById('filterPortfolioAppStatus').value;
+    const socle = document.getElementById('filterPortfolioSocle').value;
+    const framework = document.getElementById('filterPortfolioFramework').value;
+    const pilotOnly = document.getElementById('filterPortfolioPilotOnly').checked;
+
+    const rows = document.querySelectorAll('#tab-portfolio tbody tr');
+    const summary = document.getElementById('filterPortfolioSummary');
+    if (rows.length === 0) {
+        if (summary) summary.innerHTML = '';
+        return;
+    }
+    let visibleCount = 0;
+    let visibleCost = 0;
+    let visibleDebts = 0;
+
+    rows.forEach(row => {
+        if (!row.dataset.appStatus) return;
+        const matches = (
+            (!search || row.dataset.search.includes(search)) &&
+            (!appStatus || row.dataset.appStatus === appStatus) &&
+            (!socle || row.dataset.socle === socle) &&
+            (!framework || row.dataset.framework === framework) &&
+            (!pilotOnly || row.dataset.pilot === 'true')
+        );
+        row.classList.toggle('filtered-out', !matches);
+        if (matches) {
+            visibleCount++;
+            visibleCost += parseFloat(row.dataset.cost || '0');
+            visibleDebts += parseInt(row.dataset.debtCount || '0', 10);
+        }
+    });
+
+    const totalCount = document.querySelectorAll('#tab-portfolio tbody tr[data-app-status]').length;
+    if (summary) {
+        if (visibleCount === totalCount) {
+            summary.innerHTML = `<strong>${totalCount}</strong> application(s) au total — ${visibleDebts} dette(s), charge : <strong>${visibleCost}</strong> jours`;
+        } else {
+            summary.innerHTML = `<strong>${visibleCount}</strong> application(s) affichée(s) sur ${totalCount} — ${visibleDebts} dette(s), charge filtrée : <strong>${visibleCost}</strong> jours`;
+        }
+    }
+}
+
+function resetPortfolioFilters() {
+    document.getElementById('filterPortfolioSearch').value = '';
+    document.getElementById('filterPortfolioAppStatus').value = '';
+    document.getElementById('filterPortfolioSocle').value = '';
+    document.getElementById('filterPortfolioFramework').value = '';
+    document.getElementById('filterPortfolioPilotOnly').checked = false;
+    applyPortfolioFilters();
+}
+
 loadFiltersFromUrl();
 applyFilters();
+applyPlanningFilters();
+applyPortfolioFilters();

@@ -487,8 +487,8 @@
             color: var(--bp-navy);
         }
 
-        tr.filtered-out {
-            display: none;
+        .filtered-out {
+            display: none !important;
         }
 
         th.sortable {
