@@ -882,7 +882,6 @@
     <script id="gantt-data" type="application/json">{{ gantt_data_json|safe }}</script>
     <script id="milestones-data" type="application/json">{{ milestones_json|safe }}</script>
     <script>
-        const CHART_DATA = JSON.parse(document.getElementById('chart-data').textContent);
         const CURRENT_USER = {{ current_user|tojson|safe }};
         const CURRENT_ROLE = {{ current_role|tojson|safe }};
     </script>
