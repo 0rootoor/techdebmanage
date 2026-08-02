@@ -3,3 +3,4 @@
 .env*
 *.pyc
 src/__pycache__/main.cpython-314.pyc
+to_remove.txt
