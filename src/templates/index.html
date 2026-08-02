@@ -1259,13 +1259,86 @@
         <div id="tab-planning" class="card" style="display:none;">
             <h2 class="card-title">Planning de résolution</h2>
             <p class="card-subtitle">Vue chronologique des actions de refactoring planifiées, triée par date cible.</p>
-            <div style="display:flex; flex-direction:column; gap:10px;">
+
+            {% if debts %}
+            <div class="filter-bar">
+                <input type="text" id="planFilterSearch" placeholder="Rechercher (titre, responsable, app)..."
+                    oninput="applyPlanningFilters()" style="flex:1; min-width:180px;" />
+                <select id="planFilterProject" onchange="applyPlanningFilters()">
+                    <option value="">Toutes les apps</option>
+                    {% for p in projects %}
+                    <option value="{{ p.name }}">{{ p.name }}</option>
+                    {% endfor %}
+                </select>
+                <select id="planFilterAppStatus" onchange="applyPlanningFilters()">
+                    <option value="">Tout statut app</option>
+                    <option value="En projet">En projet</option>
+                    <option value="En développement">En développement</option>
+                    <option value="En production">En production</option>
+                    <option value="En maintenance">En maintenance</option>
+                    <option value="Décommissionnée">Décommissionnée</option>
+                </select>
+                <select id="planFilterSocle" onchange="applyPlanningFilters()">
+                    <option value="">Tout socle</option>
+                    {% for s in distinct_socles %}
+                    <option value="{{ s }}">{{ s }}</option>
+                    {% endfor %}
+                </select>
+                <select id="planFilterFramework" onchange="applyPlanningFilters()">
+                    <option value="">Tout framework</option>
+                    {% for f in distinct_frameworks %}
+                    <option value="{{ f }}">{{ f }}</option>
+                    {% endfor %}
+                </select>
+                <select id="planFilterCategory" onchange="applyPlanningFilters()">
+                    <option value="">Toute catégorie</option>
+                    <option value="Code">Code</option>
+                    <option value="Architecture">Architecture</option>
+                    <option value="Sécurité">Sécurité</option>
+                    <option value="Documentation">Documentation</option>
+                    <option value="Tests">Tests</option>
+                </select>
+                <select id="planFilterImpact" onchange="applyPlanningFilters()">
+                    <option value="">Tout impact</option>
+                    <option value="Faible">Faible</option>
+                    <option value="Moyen">Moyen</option>
+                    <option value="Élevé">Élevé</option>
+                </select>
+                <select id="planFilterStatus" onchange="applyPlanningFilters()">
+                    <option value="">Tout statut dette</option>
+                    <option value="Ouverte">Ouverte</option>
+                    <option value="En cours">En cours</option>
+                    <option value="Résolue">Résolue</option>
+                </select>
+                <label
+                    style="display:flex; align-items:center; gap:5px; font-size:12.5px; color:var(--muted); white-space:nowrap;">
+                    <input type="checkbox" id="planFilterPilotOnly" onchange="applyPlanningFilters()"
+                        style="width:auto;" /> Pilotes uniquement
+                </label>
+                <label
+                    style="display:flex; align-items:center; gap:5px; font-size:12.5px; color:var(--muted); white-space:nowrap;">
+                    <input type="checkbox" id="planFilterOverdueOnly" onchange="applyPlanningFilters()"
+                        style="width:auto;" /> En retard uniquement
+                </label>
+                <button type="button" class="btn-ghost" onclick="resetPlanningFilters()">Réinitialiser</button>
+            </div>
+            <div id="planFilterSummary" class="filter-summary"></div>
+            {% endif %}
+
+            <div id="planningList" style="display:flex; flex-direction:column; gap:10px; margin-top:12px;">
                 {% if not debts %}
                 <div class="empty-state">Aucune dette à planifier.</div>
                 {% endif %}
                 {% for d in sorted_debts %}
                 {% set is_overdue = d.target_date and d.target_date < today and d.status !='Résolue' %} <div
-                    class="plan-card">
+                    class="plan-card" data-project="{{ d.project.name if d.project else '' }}"
+                    data-socle="{{ d.project.socle if d.project and d.project.socle else '' }}"
+                    data-framework="{{ d.project.framework if d.project and d.project.framework else '' }}"
+                    data-app-status="{{ d.project.app_status if d.project else '' }}" data-category="{{ d.category }}"
+                    data-impact="{{ d.impact }}" data-status="{{ d.status }}"
+                    data-pilot="{{ 'true' if d.project and d.project.is_pilot else 'false' }}"
+                    data-overdue="{{ 'true' if is_overdue else 'false' }}"
+                    data-search="{{ (d.title ~ ' ' ~ (d.assignee or '') ~ ' ' ~ (d.project.name if d.project else ''))|lower }}">
                     <div>
                         <div style="display:flex; align-items:center; gap:8px;">
                             <span class="pill pill-cat">{{ d.project.name if d.project else "Inconnu" }}</span>
@@ -1379,7 +1452,45 @@
             {% if not portfolio_rows %}
             <div class="empty-state">Aucune application enregistrée.</div>
             {% else %}
-            <div style="overflow-x:auto;">
+
+            <div class="filter-bar">
+                <input type="text" id="portFilterSearch" placeholder="Rechercher une application..."
+                    oninput="applyPortfolioFilters()" style="flex:1; min-width:180px;" />
+                <select id="portFilterAppStatus" onchange="applyPortfolioFilters()">
+                    <option value="">Tout statut</option>
+                    <option value="En projet">En projet</option>
+                    <option value="En développement">En développement</option>
+                    <option value="En production">En production</option>
+                    <option value="En maintenance">En maintenance</option>
+                    <option value="Décommissionnée">Décommissionnée</option>
+                </select>
+                <select id="portFilterSocle" onchange="applyPortfolioFilters()">
+                    <option value="">Tout socle</option>
+                    {% for s in distinct_socles %}
+                    <option value="{{ s }}">{{ s }}</option>
+                    {% endfor %}
+                </select>
+                <select id="portFilterFramework" onchange="applyPortfolioFilters()">
+                    <option value="">Tout framework</option>
+                    {% for f in distinct_frameworks %}
+                    <option value="{{ f }}">{{ f }}</option>
+                    {% endfor %}
+                </select>
+                <label
+                    style="display:flex; align-items:center; gap:5px; font-size:12.5px; color:var(--muted); white-space:nowrap;">
+                    <input type="checkbox" id="portFilterPilotOnly" onchange="applyPortfolioFilters()"
+                        style="width:auto;" /> Pilotes uniquement
+                </label>
+                <label
+                    style="display:flex; align-items:center; gap:5px; font-size:12.5px; color:var(--muted); white-space:nowrap;">
+                    <input type="checkbox" id="portFilterOverdueOnly" onchange="applyPortfolioFilters()"
+                        style="width:auto;" /> Avec retard uniquement
+                </label>
+                <button type="button" class="btn-ghost" onclick="resetPortfolioFilters()">Réinitialiser</button>
+            </div>
+            <div id="portFilterSummary" class="filter-summary"></div>
+
+            <div style="overflow-x:auto; margin-top:12px;">
                 <table>
                     <thead>
                         <tr>
@@ -1394,13 +1505,16 @@
                             <th style="text-align:right;">Actions</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="portfolioTableBody">
                         {% for row in portfolio_rows %}
                         {% set p = row.project %}
                         {% set status_color = '#157A5C' if p.app_status == 'En production' else ('#B5730A' if
                         p.app_status in ['En développement','En maintenance'] else ('#94A3B8' if p.app_status ==
                         'Décommissionnée' else 'var(--bp-blue)')) %}
-                        <tr>
+                        <tr data-search="{{ p.name|lower }}" data-app-status="{{ p.app_status }}"
+                            data-socle="{{ p.socle or '' }}" data-framework="{{ p.framework or '' }}"
+                            data-pilot="{{ 'true' if p.is_pilot else 'false' }}"
+                            data-overdue="{{ 'true' if row.overdue_count > 0 else 'false' }}">
                             <td>
                                 <div style="display:flex; align-items:center; gap:6px;">
                                     <span
@@ -1959,6 +2073,104 @@
             applyFilters();
         }
 
+        // --- Filtres de l'onglet Planning ---
+        function applyPlanningFilters() {
+            const cards = document.querySelectorAll('#planningList .plan-card[data-project]');
+            const summary = document.getElementById('planFilterSummary');
+            if (!cards.length) { if (summary) summary.innerHTML = ''; return; }
+
+            const search = document.getElementById('planFilterSearch').value.trim().toLowerCase();
+            const project = document.getElementById('planFilterProject').value;
+            const appStatus = document.getElementById('planFilterAppStatus').value;
+            const socle = document.getElementById('planFilterSocle').value;
+            const framework = document.getElementById('planFilterFramework').value;
+            const category = document.getElementById('planFilterCategory').value;
+            const impact = document.getElementById('planFilterImpact').value;
+            const status = document.getElementById('planFilterStatus').value;
+            const pilotOnly = document.getElementById('planFilterPilotOnly').checked;
+            const overdueOnly = document.getElementById('planFilterOverdueOnly').checked;
+
+            let visibleCount = 0;
+            cards.forEach(card => {
+                const matches = (
+                    (!search || card.dataset.search.includes(search)) &&
+                    (!project || card.dataset.project === project) &&
+                    (!appStatus || card.dataset.appStatus === appStatus) &&
+                    (!socle || card.dataset.socle === socle) &&
+                    (!framework || card.dataset.framework === framework) &&
+                    (!category || card.dataset.category === category) &&
+                    (!impact || card.dataset.impact === impact) &&
+                    (!status || card.dataset.status === status) &&
+                    (!pilotOnly || card.dataset.pilot === 'true') &&
+                    (!overdueOnly || card.dataset.overdue === 'true')
+                );
+                card.classList.toggle('filtered-out', !matches);
+                if (matches) visibleCount++;
+            });
+
+            const totalCount = cards.length;
+            summary.innerHTML = (visibleCount === totalCount)
+                ? `<strong>${totalCount}</strong> dette(s) au total`
+                : `<strong>${visibleCount}</strong> dette(s) affichée(s) sur ${totalCount}`;
+        }
+
+        function resetPlanningFilters() {
+            document.getElementById('planFilterSearch').value = '';
+            document.getElementById('planFilterProject').value = '';
+            document.getElementById('planFilterAppStatus').value = '';
+            document.getElementById('planFilterSocle').value = '';
+            document.getElementById('planFilterFramework').value = '';
+            document.getElementById('planFilterCategory').value = '';
+            document.getElementById('planFilterImpact').value = '';
+            document.getElementById('planFilterStatus').value = '';
+            document.getElementById('planFilterPilotOnly').checked = false;
+            document.getElementById('planFilterOverdueOnly').checked = false;
+            applyPlanningFilters();
+        }
+
+        // --- Filtres de l'onglet Portefeuille ---
+        function applyPortfolioFilters() {
+            const rows = document.querySelectorAll('#portfolioTableBody tr[data-search]');
+            const summary = document.getElementById('portFilterSummary');
+            if (!rows.length) { if (summary) summary.innerHTML = ''; return; }
+
+            const search = document.getElementById('portFilterSearch').value.trim().toLowerCase();
+            const appStatus = document.getElementById('portFilterAppStatus').value;
+            const socle = document.getElementById('portFilterSocle').value;
+            const framework = document.getElementById('portFilterFramework').value;
+            const pilotOnly = document.getElementById('portFilterPilotOnly').checked;
+            const overdueOnly = document.getElementById('portFilterOverdueOnly').checked;
+
+            let visibleCount = 0;
+            rows.forEach(row => {
+                const matches = (
+                    (!search || row.dataset.search.includes(search)) &&
+                    (!appStatus || row.dataset.appStatus === appStatus) &&
+                    (!socle || row.dataset.socle === socle) &&
+                    (!framework || row.dataset.framework === framework) &&
+                    (!pilotOnly || row.dataset.pilot === 'true') &&
+                    (!overdueOnly || row.dataset.overdue === 'true')
+                );
+                row.classList.toggle('filtered-out', !matches);
+                if (matches) visibleCount++;
+            });
+
+            const totalCount = rows.length;
+            summary.innerHTML = (visibleCount === totalCount)
+                ? `<strong>${totalCount}</strong> application(s) au total`
+                : `<strong>${visibleCount}</strong> application(s) affichée(s) sur ${totalCount}`;
+        }
+
+        function resetPortfolioFilters() {
+            document.getElementById('portFilterSearch').value = '';
+            document.getElementById('portFilterAppStatus').value = '';
+            document.getElementById('portFilterSocle').value = '';
+            document.getElementById('portFilterFramework').value = '';
+            document.getElementById('portFilterPilotOnly').checked = false;
+            document.getElementById('portFilterOverdueOnly').checked = false;
+            applyPortfolioFilters();
+        }
+
         // --- Tri des colonnes du registre ---
         const IMPACT_RANK = { 'Faible': 0, 'Moyen': 1, 'Élevé': 2 };
         const STATUS_RANK = { 'Ouverte': 0, 'En cours': 1, 'Résolue': 2 };
@@ -2031,6 +2243,8 @@
 
             if (tab === 'stats') initCharts();
             if (tab === 'gantt') initGantt();
+            if (tab === 'planning' && document.getElementById('planFilterSummary')) applyPlanningFilters();
+            if (tab === 'portfolio' && document.getElementById('portFilterSummary')) applyPortfolioFilters();
 
             const params = new URLSearchParams(window.location.search);
             params.set('tab', tab);

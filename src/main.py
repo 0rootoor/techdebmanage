@@ -14,6 +14,7 @@ import os
 import urllib.request
 import hashlib
 import secrets
+import inspect
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
@@ -21,6 +22,34 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 # On ajoute un filtre tojson pour pouvoir injecter des valeurs en toute sécurité
 # dans les attributs onclick (échappées ensuite en HTML via |e).
 templates.env.filters["tojson"] = lambda value: json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
+# Contournement d'un bug connu d'incompatibilité entre Starlette >= 1.0.0 et Jinja2
+# (TypeError: cannot use 'tuple' as a dict key), lié à la clé de cache interne de Jinja2.
+# Désactiver le cache de templates supprime la cause du problème, quelle que soit la
+# version de Starlette installée — donc plus besoin de dépendre d'un pin de version.
+# Coût : le template est relu/recompilé à chaque requête, négligeable pour une appli
+# de cette taille. Voir https://github.com/fastapi/fastapi/issues/15197
+templates.env.cache = None
+
+# Compatibilité multi-versions de Starlette pour TemplateResponse :
+# - Starlette < 0.29  : TemplateResponse(name, context)            (request DANS context)
+# - Starlette >= 1.0  : TemplateResponse(request, name, context)   (request en 1er argument, obligatoire)
+# On détecte la signature réellement installée à l'exécution pour ne jamais avoir
+# à se soucier de la version de Starlette présente dans l'environnement virtuel.
+try:
+    _TR_PARAMS = list(inspect.signature(templates.TemplateResponse).parameters)
+except (TypeError, ValueError):
+    _TR_PARAMS = []
+_TEMPLATE_RESPONSE_NEW_STYLE = bool(_TR_PARAMS) and _TR_PARAMS[0] == "request"
+
+def render_template(request: Request, name: str, context: dict, status_code: int = 200):
+    """Rend un template Jinja2 via Starlette, quelle que soit la version installée."""
+    if _TEMPLATE_RESPONSE_NEW_STYLE:
+        return templates.TemplateResponse(request, name, context, status_code=status_code)
+    try:
+        return templates.TemplateResponse(name, {**context, "request": request}, status_code=status_code)
+    except TypeError:
+        # Filet de sécurité si la détection de signature s'est trompée
+        return templates.TemplateResponse(request, name, context, status_code=status_code)
 
 # Configuration de la base de données SQLite
 DATABASE_URL = "sqlite:///./tech_debt_v4.db"
@@ -229,7 +258,7 @@ def get_db():
 def login_page(request: Request):
     if request.session.get("authenticated"):
         return RedirectResponse(url="/", status_code=303)
-    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+    return render_template(request, "login.html", {"error": None})
 
 @app.post("/login")
 def login_submit(request: Request, username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
@@ -240,9 +269,10 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
         request.session["role"] = user.role
         request.session["user_id"] = user.id
         return RedirectResponse(url="/", status_code=303)
-    return templates.TemplateResponse(
+    return render_template(
+        request,
         "login.html",
-        {"request": request, "error": "Identifiant ou mot de passe incorrect."},
+        {"error": "Identifiant ou mot de passe incorrect."},
         status_code=401,
     )
 
@@ -964,10 +994,10 @@ def read_root(request: Request, db: Session = Depends(get_db)):
     recent_audit_log = db.query(AuditLogModel).order_by(AuditLogModel.timestamp.desc()).limit(200).all()
     all_users = db.query(UserModel).order_by(UserModel.username).all() if current_role == "admin" else []
 
-    return templates.TemplateResponse(
+    return render_template(
+        request,
         "index.html",
         {
-            "request": request,
             "current_user": current_user,
             "current_role": current_role,
             "role_labels": ROLE_LABELS,
