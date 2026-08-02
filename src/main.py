@@ -22,6 +22,23 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 # dans les attributs onclick (échappées ensuite en HTML via |e).
 templates.env.filters["tojson"] = lambda value: json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
 
+import inspect
+
+# Détection de la signature de TemplateResponse pour assurer la compatibilité
+# entre les anciennes et nouvelles versions de Starlette/FastAPI.
+_sig = inspect.signature(templates.TemplateResponse)
+if "request" in _sig.parameters:
+    # Version moderne (Starlette >= 0.28.0)
+    def render_template(request: Request, name: str, context: dict = None, status_code: int = 200):
+        context = context or {}
+        return templates.TemplateResponse(request=request, name=name, context=context, status_code=status_code)
+else:
+    # Ancienne version (Starlette < 0.28.0)
+    def render_template(request: Request, name: str, context: dict = None, status_code: int = 200):
+        context = context or {}
+        context["request"] = request
+        return templates.TemplateResponse(name, context, status_code=status_code)
+
 # Configuration de la base de données SQLite
 DATABASE_URL = "sqlite:///./tech_debt_v4.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -144,7 +161,7 @@ app = FastAPI(title="Gestion Avancée de la Dette Technique")
 SESSION_SECRET_KEY = os.environ.get("TECHDEBT_SECRET_KEY", "dev-secret-key-change-in-production")
 DEFAULT_ADMIN_PASSWORD = os.environ.get("TECHDEBT_ADMIN_PASSWORD", "changeme123")
 if SESSION_SECRET_KEY == "dev-secret-key-change-in-production":
-    print("⚠️  ATTENTION : clé de session par défaut utilisée. Définis la variable d'environnement "
+    print("[WARNING] ATTENTION : clé de session par défaut utilisée. Définis la variable d'environnement "
           "TECHDEBT_SECRET_KEY avant tout déploiement au-delà de ton poste.")
 
 ROLES = ["admin", "contributeur", "lecture_seule"]
@@ -170,7 +187,7 @@ with SessionLocal() as _bootstrap_db:
         _bootstrap_db.add(UserModel(username="admin", password_hash=hash_password(DEFAULT_ADMIN_PASSWORD), role="admin"))
         _bootstrap_db.commit()
         if DEFAULT_ADMIN_PASSWORD == "changeme123":
-            print("⚠️  ATTENTION : compte admin créé avec le mot de passe par défaut 'changeme123' "
+            print("[WARNING] ATTENTION : compte admin créé avec le mot de passe par défaut 'changeme123' "
                   "(identifiant : admin). Change-le dès la première connexion, ou définis "
                   "TECHDEBT_ADMIN_PASSWORD avant le premier démarrage.")
 
@@ -229,7 +246,7 @@ def get_db():
 def login_page(request: Request):
     if request.session.get("authenticated"):
         return RedirectResponse(url="/", status_code=303)
-    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+    return render_template(request, "login.html", {"error": None})
 
 @app.post("/login")
 def login_submit(request: Request, username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
@@ -240,9 +257,10 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
         request.session["role"] = user.role
         request.session["user_id"] = user.id
         return RedirectResponse(url="/", status_code=303)
-    return templates.TemplateResponse(
+    return render_template(
+        request,
         "login.html",
-        {"request": request, "error": "Identifiant ou mot de passe incorrect."},
+        {"error": "Identifiant ou mot de passe incorrect."},
         status_code=401,
     )
 
@@ -964,10 +982,10 @@ def read_root(request: Request, db: Session = Depends(get_db)):
     recent_audit_log = db.query(AuditLogModel).order_by(AuditLogModel.timestamp.desc()).limit(200).all()
     all_users = db.query(UserModel).order_by(UserModel.username).all() if current_role == "admin" else []
 
-    return templates.TemplateResponse(
+    return render_template(
+        request,
         "index.html",
         {
-            "request": request,
             "current_user": current_user,
             "current_role": current_role,
             "role_labels": ROLE_LABELS,
