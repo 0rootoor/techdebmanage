@@ -1,6 +1,5 @@
+.venv/
 *.db
 .env*
-*.cpyth*
-__pycache__*
-*.db.md
 *.pyc
+src/__pycache__/main.cpython-314.pyc

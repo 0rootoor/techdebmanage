@@ -97,6 +97,16 @@ class DebtLinkModel(Base):
 
     debt = relationship("TechDebtModel", back_populates="links")
 
+class MilestoneModel(Base):
+    __tablename__ = "milestones"
+    id = Column(Integer, primary_key=True, index=True)
+    label = Column(String)
+    milestone_date = Column(Date)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)  # None = jalon global
+    created_by = Column(String, nullable=True)
+
+    project = relationship("ProjectModel")
+
 Base.metadata.create_all(bind=engine)
 
 # Petite migration de compatibilité : si la base existait déjà (avant l'ajout
@@ -660,6 +670,40 @@ def delete_link(link_id: int, db: Session = Depends(get_db), user: str = Depends
     return {"message": "Lien supprimé"}
 
 
+# --- API Endpoints : Jalons (vue Gantt) ---
+
+@app.post("/api/milestones")
+def create_milestone(
+    label: str,
+    milestone_date: str,
+    project_id: int = None,
+    db: Session = Depends(get_db),
+    user: str = Depends(require_contributor),
+):
+    if not label.strip():
+        raise HTTPException(status_code=400, detail="Le libellé du jalon est requis")
+    try:
+        m_date = datetime.strptime(milestone_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Date invalide")
+    milestone = MilestoneModel(label=label.strip(), milestone_date=m_date, project_id=project_id, created_by=user)
+    db.add(milestone)
+    log_action(db, user, "Jalon", label.strip(), "Création", m_date.isoformat())
+    db.commit()
+    return {"message": "Jalon ajouté"}
+
+@app.delete("/api/milestones/{milestone_id}")
+def delete_milestone(milestone_id: int, db: Session = Depends(get_db), user: str = Depends(require_contributor)):
+    milestone = db.query(MilestoneModel).filter(MilestoneModel.id == milestone_id).first()
+    if not milestone:
+        raise HTTPException(status_code=404, detail="Jalon non trouvé")
+    label = milestone.label
+    db.delete(milestone)
+    log_action(db, user, "Jalon", label, "Suppression")
+    db.commit()
+    return {"message": "Jalon supprimé"}
+
+
 @app.get("/api/debts/export")
 def export_debts(
     ids: str = "",
@@ -810,6 +854,24 @@ def read_root(request: Request, db: Session = Depends(get_db)):
     for cat in category_labels:
         cost_by_category.append(sum(d.cost_days for d in debts if d.category == cat))
 
+    # Répartition des applications par socle / framework / statut
+    from collections import Counter
+    socle_counter = Counter(p.socle for p in projects if p.socle)
+    socle_labels = sorted(socle_counter, key=lambda k: -socle_counter[k])
+    socle_counts = [socle_counter[k] for k in socle_labels]
+
+    framework_counter = Counter(p.framework for p in projects if p.framework)
+    framework_labels = sorted(framework_counter, key=lambda k: -framework_counter[k])
+    framework_counts = [framework_counter[k] for k in framework_labels]
+
+    app_status_order = ["En projet", "En développement", "En production", "En maintenance", "Décommissionnée"]
+    app_status_labels, app_status_counts = [], []
+    for s in app_status_order:
+        count = sum(1 for p in projects if p.app_status == s)
+        if count > 0:
+            app_status_labels.append(s)
+            app_status_counts.append(count)
+
     chart_data = {
         "categoryLabels": category_labels,
         "categoryCounts": category_counts,
@@ -818,6 +880,12 @@ def read_root(request: Request, db: Session = Depends(get_db)):
         "impactCounts": impact_counts,
         "statusLabels": status_order,
         "statusCounts": status_counts,
+        "socleLabels": socle_labels,
+        "socleCounts": socle_counts,
+        "frameworkLabels": framework_labels,
+        "frameworkCounts": framework_counts,
+        "appStatusLabels": app_status_labels,
+        "appStatusCounts": app_status_counts,
     }
 
     # Données pour la vue Gantt : une barre par dette, du jour de création
@@ -848,6 +916,18 @@ def read_root(request: Request, db: Session = Depends(get_db)):
         })
     # Tri : applications pilotes d'abord, puis par date de début
     gantt_rows.sort(key=lambda r: (not r["isPilot"], r["start"]))
+
+    # Jalons de la vue Gantt
+    milestones = db.query(MilestoneModel).order_by(MilestoneModel.milestone_date).all()
+    milestones_data = [
+        {
+            "id": m.id,
+            "label": m.label,
+            "date": m.milestone_date.isoformat(),
+            "project": m.project.name if m.project else None,
+        }
+        for m in milestones
+    ]
 
     # Vue "portefeuille applicatif" : agrégats par application plutôt que par dette
     portfolio_rows = []
@@ -904,6 +984,8 @@ def read_root(request: Request, db: Session = Depends(get_db)):
             "today": date.today(),
             "chart_data_json": json.dumps(chart_data, ensure_ascii=False).replace("</", "<\\/"),
             "gantt_data_json": json.dumps(gantt_rows, ensure_ascii=False).replace("</", "<\\/"),
+            "milestones_json": json.dumps(milestones_data, ensure_ascii=False).replace("</", "<\\/"),
+            "milestones": milestones,
             "portfolio_rows": portfolio_rows,
             "alerts_overdue": alerts_overdue,
             "alerts_soon": alerts_soon,

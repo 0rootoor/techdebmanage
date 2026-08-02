@@ -452,6 +452,13 @@
             background: white;
         }
 
+        .chart-box-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 8px;
+        }
+
         .chart-canvas-wrap {
             height: 260px;
             position: relative;
@@ -805,6 +812,25 @@
             white-space: nowrap;
         }
 
+        .gantt-milestone-line {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #7C3AED;
+            z-index: 1;
+            border-left: 2px dashed #7C3AED;
+            background: none;
+            cursor: help;
+        }
+
+        .gantt-milestone-flag {
+            position: absolute;
+            top: -18px;
+            left: -8px;
+            font-size: 13px;
+        }
+
         @media (max-width: 900px) {
             .kpi-grid {
                 grid-template-columns: repeat(2, 1fr);
@@ -812,6 +838,34 @@
 
             .chart-grid {
                 grid-template-columns: 1fr;
+            }
+        }
+
+        /* Export du Gantt en PDF via l'impression du navigateur */
+        @media print {
+            body.printing-gantt>* {
+                visibility: hidden;
+            }
+
+            body.printing-gantt #tab-gantt,
+            body.printing-gantt #tab-gantt * {
+                visibility: visible;
+            }
+
+            body.printing-gantt #tab-gantt {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                display: block !important;
+            }
+
+            body.printing-gantt #tab-gantt .gantt-wrap {
+                overflow: visible;
+            }
+
+            body.printing-gantt #milestoneFormCard {
+                display: none !important;
             }
         }
     </style>
@@ -890,7 +944,7 @@
             {% else %}
             <div style="display:flex; flex-direction:column; gap:16px;">
                 <!-- Ajouter / Modifier une Application -->
-                <div class="card">
+                <div class="card" id="project-form-card">
                     <h2 id="project-form-title" class="card-title">Ajouter une application</h2>
                     <form onsubmit="event.preventDefault(); saveProject(this);"
                         style="display:flex; flex-direction:column; gap:10px; margin-top:10px;">
@@ -971,7 +1025,7 @@
                 </div>
 
                 <!-- Formulaire Déclarer / Modifier une Dette -->
-                <div class="card">
+                <div class="card" id="debt-form-card">
                     <h2 id="debt-form-title" class="card-title">Déclarer une dette</h2>
                     <form onsubmit="event.preventDefault(); saveDebt(this);"
                         style="display:flex; flex-direction:column; gap:10px; margin-top:6px;">
@@ -1241,10 +1295,64 @@
     <!-- ONGLET 3 : GANTT -->
     <div id="tab-gantt" style="display:none;">
         <div class="card">
-            <h2 class="card-title">Vue Gantt globale</h2>
-            <p class="card-subtitle">Vue d'ensemble du traitement de la dette, de la déclaration à l'échéance cible. Les
-                applications pilotes apparaissent en premier. Les barres striées indiquent une échéance estimée (aucune
-                date cible saisie).</p>
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
+                <div>
+                    <h2 class="card-title">Vue Gantt globale</h2>
+                    <p class="card-subtitle">Vue d'ensemble du traitement de la dette, de la déclaration à l'échéance
+                        cible. Les applications pilotes apparaissent en premier. Les barres striées indiquent une
+                        échéance estimée (aucune date cible saisie).</p>
+                </div>
+                <button type="button" class="btn-ghost" style="flex-shrink:0;" onclick="exportGanttPdf()">⬇ Exporter en
+                    PDF</button>
+            </div>
+
+            {% if current_role != 'lecture_seule' %}
+            <div id="milestoneFormCard"
+                style="background:var(--bg); border-radius:10px; padding:14px; margin-top:16px;">
+                <h4 style="font-size:12.5px; font-weight:700; color:var(--bp-navy); margin:0 0 10px;">🚩 Ajouter un
+                    jalon</h4>
+                <form onsubmit="event.preventDefault(); submitMilestone(this);"
+                    style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+                    <div style="flex:2; min-width:160px;">
+                        <label class="field-label">Libellé</label>
+                        <input type="text" id="milestone_label" placeholder="Ex: Comité de pilotage T3" required />
+                    </div>
+                    <div style="flex:1; min-width:140px;">
+                        <label class="field-label">Date</label>
+                        <input type="date" id="milestone_date" required />
+                    </div>
+                    <div style="flex:1; min-width:160px;">
+                        <label class="field-label">Application (facultatif)</label>
+                        <select id="milestone_project_id">
+                            <option value="">Jalon global</option>
+                            {% for p in projects %}
+                            <option value="{{ p.id }}">{{ p.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <button type="submit" class="btn-secondary" style="width:auto; padding:9px 16px;">Ajouter</button>
+                </form>
+            </div>
+            {% endif %}
+
+            {% if milestones %}
+            <div style="margin-top:14px; display:flex; flex-wrap:wrap; gap:8px;">
+                {% for m in milestones %}
+                <div
+                    style="display:flex; align-items:center; gap:6px; background:var(--bp-blue-50); border-radius:8px; padding:5px 10px; font-size:12px;">
+                    <span style="color:#7C3AED; font-weight:700;">🚩</span>
+                    <span style="font-weight:600;">{{ m.label }}</span>
+                    <span style="color:var(--muted);">{{ m.milestone_date.strftime("%Y-%m-%d") }}{% if m.project %} · {{
+                        m.project.name }}{% endif %}</span>
+                    {% if current_role != 'lecture_seule' %}
+                    <button type="button" onclick="deleteMilestoneUI({{ m.id }})" title="Supprimer"
+                        style="border:none; background:none; cursor:pointer; color:var(--muted); font-size:11px; padding:0;">✕</button>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
             {% if not debts %}
             <div class="empty-state">Aucune dette à représenter pour le moment.</div>
             {% else %}
@@ -1254,6 +1362,7 @@
                 <span><span class="legend-dot" style="background:#C0362C;"></span> Impact élevé</span>
                 <span><span class="legend-dot" style="background:var(--danger); width:3px; border-radius:0;"></span>
                     Aujourd'hui</span>
+                <span><span style="color:#7C3AED; font-weight:700;">🚩</span> Jalon</span>
             </div>
             <div id="ganttContainer" class="gantt-wrap" style="margin-top:12px;">
                 <div class="empty-state">Chargement du planning…</div>
@@ -1533,33 +1642,95 @@
 
     <!-- ONGLET 8 : STATISTIQUES -->
     <div id="tab-stats" style="display:none;">
-        {% if not debts %}
+        {% if not debts and not projects %}
         <div class="card">
-            <div class="empty-state">Pas encore de données à visualiser — ajoute une première dette pour voir apparaître
-                les graphiques.</div>
+            <div class="empty-state">Pas encore de données à visualiser — ajoute une première application ou dette pour
+                voir apparaître les graphiques.</div>
         </div>
         {% else %}
         <div class="chart-grid">
+            {% if debts %}
             <div class="chart-box">
-                <h2 class="card-title">Répartition par catégorie</h2>
-                <p class="card-subtitle">Nombre de dettes déclarées par type</p>
+                <div class="chart-box-header">
+                    <div>
+                        <h2 class="card-title">Répartition par catégorie</h2>
+                        <p class="card-subtitle">Nombre de dettes déclarées par type</p>
+                    </div>
+                    <button type="button" class="icon-btn" title="Exporter en PNG"
+                        onclick="exportChartImage('chartCategory', 'repartition_categorie')">⬇</button>
+                </div>
                 <div class="chart-canvas-wrap"><canvas id="chartCategory"></canvas></div>
             </div>
             <div class="chart-box">
-                <h2 class="card-title">Répartition par impact</h2>
-                <p class="card-subtitle">Volume de dettes selon leur niveau d'impact</p>
+                <div class="chart-box-header">
+                    <div>
+                        <h2 class="card-title">Répartition par impact</h2>
+                        <p class="card-subtitle">Volume de dettes selon leur niveau d'impact</p>
+                    </div>
+                    <button type="button" class="icon-btn" title="Exporter en PNG"
+                        onclick="exportChartImage('chartImpact', 'repartition_impact')">⬇</button>
+                </div>
                 <div class="chart-canvas-wrap"><canvas id="chartImpact"></canvas></div>
             </div>
             <div class="chart-box">
-                <h2 class="card-title">Charge (jours) par catégorie</h2>
-                <p class="card-subtitle">Effort estimé de résolution, en jours</p>
+                <div class="chart-box-header">
+                    <div>
+                        <h2 class="card-title">Charge (jours) par catégorie</h2>
+                        <p class="card-subtitle">Effort estimé de résolution, en jours</p>
+                    </div>
+                    <button type="button" class="icon-btn" title="Exporter en PNG"
+                        onclick="exportChartImage('chartCost', 'charge_par_categorie')">⬇</button>
+                </div>
                 <div class="chart-canvas-wrap"><canvas id="chartCost"></canvas></div>
             </div>
             <div class="chart-box">
-                <h2 class="card-title">Avancement du traitement</h2>
-                <p class="card-subtitle">Répartition des dettes par statut</p>
+                <div class="chart-box-header">
+                    <div>
+                        <h2 class="card-title">Avancement du traitement</h2>
+                        <p class="card-subtitle">Répartition des dettes par statut</p>
+                    </div>
+                    <button type="button" class="icon-btn" title="Exporter en PNG"
+                        onclick="exportChartImage('chartStatus', 'avancement_traitement')">⬇</button>
+                </div>
                 <div class="chart-canvas-wrap"><canvas id="chartStatus"></canvas></div>
             </div>
+            {% endif %}
+
+            {% if projects %}
+            <div class="chart-box">
+                <div class="chart-box-header">
+                    <div>
+                        <h2 class="card-title">Répartition par socle</h2>
+                        <p class="card-subtitle">Nombre d'applications par socle technique</p>
+                    </div>
+                    <button type="button" class="icon-btn" title="Exporter en PNG"
+                        onclick="exportChartImage('chartSocle', 'repartition_socle')">⬇</button>
+                </div>
+                <div class="chart-canvas-wrap"><canvas id="chartSocle"></canvas></div>
+            </div>
+            <div class="chart-box">
+                <div class="chart-box-header">
+                    <div>
+                        <h2 class="card-title">Répartition par framework</h2>
+                        <p class="card-subtitle">Nombre d'applications par framework principal</p>
+                    </div>
+                    <button type="button" class="icon-btn" title="Exporter en PNG"
+                        onclick="exportChartImage('chartFramework', 'repartition_framework')">⬇</button>
+                </div>
+                <div class="chart-canvas-wrap"><canvas id="chartFramework"></canvas></div>
+            </div>
+            <div class="chart-box">
+                <div class="chart-box-header">
+                    <div>
+                        <h2 class="card-title">Répartition par statut d'application</h2>
+                        <p class="card-subtitle">En projet, en développement, en production...</p>
+                    </div>
+                    <button type="button" class="icon-btn" title="Exporter en PNG"
+                        onclick="exportChartImage('chartAppStatus', 'repartition_statut_app')">⬇</button>
+                </div>
+                <div class="chart-canvas-wrap"><canvas id="chartAppStatus"></canvas></div>
+            </div>
+            {% endif %}
         </div>
         {% endif %}
     </div>
@@ -1568,6 +1739,7 @@
 
     <script id="chart-data" type="application/json">{{ chart_data_json|safe }}</script>
     <script id="gantt-data" type="application/json">{{ gantt_data_json|safe }}</script>
+    <script id="milestones-data" type="application/json">{{ milestones_json|safe }}</script>
     <script>
         // Déclarées en tout premier pour ne jamais rester bloquées dans la zone
         // morte temporelle si une ligne plus bas venait à lever une erreur
@@ -1593,51 +1765,102 @@
 
         function initCharts() {
             if (chartsInitialized) return;
-            const catCanvas = document.getElementById('chartCategory');
-            if (!catCanvas) return;
+            const anyCanvas = document.getElementById('chartCategory') || document.getElementById('chartSocle');
+            if (!anyCanvas) return;
             if (typeof Chart === 'undefined') {
-                catCanvas.closest('.chart-grid').innerHTML = `<div class="empty-state" style="grid-column:1/-1; color:var(--danger);">
+                anyCanvas.closest('.chart-grid').innerHTML = `<div class="empty-state" style="grid-column:1/-1; color:var(--danger);">
                     Impossible de charger la librairie de graphiques (Chart.js) depuis le CDN. Vérifie ta connexion internet ou ouvre la console du navigateur (F12) pour plus de détails.
                 </div>`;
                 return;
             }
             chartsInitialized = true;
 
-            new Chart(document.getElementById('chartCategory'), {
-                type: 'doughnut',
-                data: {
-                    labels: CHART_DATA.categoryLabels,
-                    datasets: [{ data: CHART_DATA.categoryCounts, backgroundColor: PALETTE, borderWidth: 0 }]
-                },
-                options: { plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 12 } } }, cutout: '65%' }
-            });
+            if (document.getElementById('chartCategory')) {
+                new Chart(document.getElementById('chartCategory'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: CHART_DATA.categoryLabels,
+                        datasets: [{ data: CHART_DATA.categoryCounts, backgroundColor: PALETTE, borderWidth: 0 }]
+                    },
+                    options: { plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 12 } } }, cutout: '65%' }
+                });
+            }
 
-            new Chart(document.getElementById('chartImpact'), {
-                type: 'bar',
-                data: {
-                    labels: CHART_DATA.impactLabels,
-                    datasets: [{ data: CHART_DATA.impactCounts, backgroundColor: ['#157A5C', '#B5730A', '#C0362C'], borderRadius: 6, maxBarThickness: 48 }]
-                },
-                options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } }, x: { grid: { display: false } } } }
-            });
+            if (document.getElementById('chartImpact')) {
+                new Chart(document.getElementById('chartImpact'), {
+                    type: 'bar',
+                    data: {
+                        labels: CHART_DATA.impactLabels,
+                        datasets: [{ data: CHART_DATA.impactCounts, backgroundColor: ['#157A5C', '#B5730A', '#C0362C'], borderRadius: 6, maxBarThickness: 48 }]
+                    },
+                    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } }, x: { grid: { display: false } } } }
+                });
+            }
 
-            new Chart(document.getElementById('chartCost'), {
-                type: 'bar',
-                data: {
-                    labels: CHART_DATA.categoryLabels,
-                    datasets: [{ label: 'Jours', data: CHART_DATA.costByCategory, backgroundColor: '#1256A3', borderRadius: 6, maxBarThickness: 40 }]
-                },
-                options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } } } }
-            });
+            if (document.getElementById('chartCost')) {
+                new Chart(document.getElementById('chartCost'), {
+                    type: 'bar',
+                    data: {
+                        labels: CHART_DATA.categoryLabels,
+                        datasets: [{ label: 'Jours', data: CHART_DATA.costByCategory, backgroundColor: '#1256A3', borderRadius: 6, maxBarThickness: 40 }]
+                    },
+                    options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } } } }
+                });
+            }
 
-            new Chart(document.getElementById('chartStatus'), {
-                type: 'doughnut',
-                data: {
-                    labels: CHART_DATA.statusLabels,
-                    datasets: [{ data: CHART_DATA.statusCounts, backgroundColor: ['#B5730A', '#2E86DE', '#157A5C'], borderWidth: 0 }]
-                },
-                options: { plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 12 } } }, cutout: '65%' }
-            });
+            if (document.getElementById('chartStatus')) {
+                new Chart(document.getElementById('chartStatus'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: CHART_DATA.statusLabels,
+                        datasets: [{ data: CHART_DATA.statusCounts, backgroundColor: ['#B5730A', '#2E86DE', '#157A5C'], borderWidth: 0 }]
+                    },
+                    options: { plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 12 } } }, cutout: '65%' }
+                });
+            }
+
+            if (document.getElementById('chartSocle')) {
+                new Chart(document.getElementById('chartSocle'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: CHART_DATA.socleLabels,
+                        datasets: [{ data: CHART_DATA.socleCounts, backgroundColor: PALETTE, borderWidth: 0 }]
+                    },
+                    options: { plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 12 } } }, cutout: '65%' }
+                });
+            }
+
+            if (document.getElementById('chartFramework')) {
+                new Chart(document.getElementById('chartFramework'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: CHART_DATA.frameworkLabels,
+                        datasets: [{ data: CHART_DATA.frameworkCounts, backgroundColor: PALETTE, borderWidth: 0 }]
+                    },
+                    options: { plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 12 } } }, cutout: '65%' }
+                });
+            }
+
+            if (document.getElementById('chartAppStatus')) {
+                const appStatusColors = { 'En projet': '#1256A3', 'En développement': '#B5730A', 'En production': '#157A5C', 'En maintenance': '#B5730A', 'Décommissionnée': '#94A3B8' };
+                new Chart(document.getElementById('chartAppStatus'), {
+                    type: 'bar',
+                    data: {
+                        labels: CHART_DATA.appStatusLabels,
+                        datasets: [{ data: CHART_DATA.appStatusCounts, backgroundColor: CHART_DATA.appStatusLabels.map(l => appStatusColors[l] || '#1256A3'), borderRadius: 6, maxBarThickness: 44 }]
+                    },
+                    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } }, x: { grid: { display: false } } } }
+                });
+            }
+        }
+
+        function exportChartImage(canvasId, filename) {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+            const link = document.createElement('a');
+            link.download = filename + '.png';
+            link.href = canvas.toDataURL('image/png', 1.0);
+            link.click();
         }
 
         function applyFilters() {
@@ -1842,6 +2065,8 @@
             const dataEl = document.getElementById('gantt-data');
             if (!dataEl) throw new Error("bloc de données gantt-data introuvable dans la page");
             const rows = JSON.parse(dataEl.textContent);
+            const milestonesEl = document.getElementById('milestones-data');
+            const milestones = milestonesEl ? JSON.parse(milestonesEl.textContent) : [];
             if (!rows.length) {
                 container.innerHTML = `<div class="empty-state">Aucune donnée de planification à afficher pour le moment.</div>`;
                 return;
@@ -1852,9 +2077,10 @@
 
             const starts = rows.map(r => parseDate(r.start).getTime());
             const ends = rows.map(r => parseDate(r.end).getTime());
+            const milestoneTimes = milestones.map(m => parseDate(m.date).getTime());
             const today = new Date(); today.setHours(0, 0, 0, 0);
-            let minTime = Math.min(...starts, today.getTime());
-            let maxTime = Math.max(...ends, today.getTime());
+            let minTime = Math.min(...starts, today.getTime(), ...(milestoneTimes.length ? milestoneTimes : [today.getTime()]));
+            let maxTime = Math.max(...ends, today.getTime(), ...(milestoneTimes.length ? milestoneTimes : [today.getTime()]));
 
             // Marge de quelques jours de chaque côté pour la lisibilité
             const DAY = 86400000;
@@ -1906,6 +2132,16 @@
                 </div>`;
             });
 
+            let milestonesHtml = '';
+            milestones.forEach(m => {
+                const offset = dayOffset(parseDate(m.date).getTime());
+                const tooltip = `${m.label} — ${m.date}${m.project ? ' — ' + m.project : ''}`;
+                milestonesHtml += `
+                    <div class="gantt-milestone-line" style="left:${LABEL_WIDTH + offset}px;" title="${escapeHtml(tooltip)}">
+                        <div class="gantt-milestone-flag">🚩</div>
+                    </div>`;
+            });
+
             container.innerHTML = `
                 <div style="min-width:${LABEL_WIDTH + timelineWidth}px;">
                     <div class="gantt-header">
@@ -1916,9 +2152,40 @@
                         <div class="gantt-today-line" style="left:${LABEL_WIDTH + todayOffset}px;">
                             <div class="gantt-today-label" style="left:-14px;">Auj.</div>
                         </div>
+                        ${milestonesHtml}
                         ${rowsHtml}
                     </div>
                 </div>`;
+        }
+
+        async function submitMilestone(form) {
+            const label = document.getElementById('milestone_label').value;
+            const milestoneDate = document.getElementById('milestone_date').value;
+            const projectId = document.getElementById('milestone_project_id').value;
+            const params = `label=${encodeURIComponent(label)}&milestone_date=${encodeURIComponent(milestoneDate)}` + (projectId ? `&project_id=${projectId}` : '');
+            const res = await fetch(`/api/milestones?${params}`, { method: 'POST' });
+            if (res.ok) {
+                window.location.reload();
+            } else {
+                const data = await res.json();
+                alert("Erreur : " + data.detail);
+            }
+        }
+
+        async function deleteMilestoneUI(id) {
+            if (!confirm("Supprimer ce jalon ?")) return;
+            const res = await fetch(`/api/milestones/${id}`, { method: 'DELETE' });
+            if (res.ok) {
+                window.location.reload();
+            } else {
+                alert("Erreur lors de la suppression.");
+            }
+        }
+
+        function exportGanttPdf() {
+            document.body.classList.add('printing-gantt');
+            window.print();
+            setTimeout(() => document.body.classList.remove('printing-gantt'), 500);
         }
 
         function openEditDebt(id, projectId, title, category, impact, costDays, assignee, startDate, targetDate) {
@@ -1935,7 +2202,8 @@
             document.getElementById('debt-form-title').innerText = "Modifier la dette";
             document.getElementById('debt-submit-btn').innerText = "Mettre à jour";
             document.getElementById('debt-cancel-btn').style.display = 'inline-block';
-            window.scrollTo({ top: 0, behavior: 'smooth' });
+            switchTab('register');
+            document.getElementById('debt-form-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
         function resetDebtForm() {
@@ -1968,7 +2236,7 @@
             document.getElementById('project-form-title').innerText = "Modifier l'application";
             document.getElementById('project-submit-btn').innerText = "Mettre à jour";
             document.getElementById('project-cancel-btn').style.display = 'inline-block';
-            window.scrollTo({ top: 0, behavior: 'smooth' });
+            document.getElementById('project-form-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
         function resetProjectForm() {
