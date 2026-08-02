@@ -65,4 +65,29 @@ uv run uvicorn main:app --reload
 
 
 Une fois le serveur démarré, rendez-vous dans votre navigateur à l'adresse :
-👉 **[http://127.0.0.1:8000]
+👉 **[http://127.0.0.1:8000](http://127.0.0.1:8000)**
+
+---
+
+## 🐳 Lancement via Docker
+
+Vous pouvez également exécuter l'application dans un conteneur Docker pour simplifier son déploiement.
+
+### 1. Construire l'image Docker
+```bash
+docker build -t techdebt-manager .
+```
+
+### 2. Lancer le conteneur
+Pour démarrer l'application et rendre la base de données SQLite persistante sur votre machine hôte :
+
+**Sous Linux / macOS :**
+```bash
+docker run -d -p 8000:8000 -v $(pwd)/tech_debt_v4.db:/app/tech_debt_v4.db techdebt-manager
+```
+
+**Sous Windows (PowerShell) :**
+```bash
+docker run -d -p 8000:8000 -v ${PWD}/tech_debt_v4.db:/app/tech_debt_v4.db techdebt-manager
+```
+
