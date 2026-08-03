@@ -12,6 +12,7 @@ import io
 import json
 import os
 import urllib.request
+import urllib.error
 import hashlib
 import secrets
 import inspect
@@ -220,6 +221,61 @@ def send_slack_message(text: str) -> bool:
     except Exception as e:
         print(f"Échec de l'envoi Slack : {e}")
         return False
+
+# --- Résumés IA (optionnel) ---
+# Si la variable d'environnement TECHDEBT_LLM_API_KEY est définie, un bouton permet
+# de générer un résumé en langage naturel des onglets Alertes et Portefeuille, à
+# partir des données déjà calculées côté serveur.
+#
+# Utilise le format d'API "chat completions" compatible OpenAI, qui fonctionne avec
+# la plupart des fournisseurs sans SDK dédié : Mistral (Devstral, Mistral Large...),
+# Ollama, vLLM, LM Studio, OpenRouter, etc. Aucune dépendance supplémentaire requise
+# (simple appel HTTP via urllib, déjà utilisé pour Slack).
+#
+# Variables d'environnement :
+#   TECHDEBT_LLM_API_KEY   : ta clé/token d'accès (obligatoire pour activer la fonctionnalité)
+#   TECHDEBT_LLM_BASE_URL  : URL de l'endpoint "chat completions"
+#                            (défaut : https://api.mistral.ai/v1/chat/completions)
+#   TECHDEBT_LLM_MODEL     : nom du modèle à utiliser (défaut : "devstral-2-latest" —
+#                            vérifie le nom exact disponible sur console.mistral.ai/models
+#                            si ça ne fonctionne pas, il change de temps en temps)
+LLM_API_KEY = os.environ.get("TECHDEBT_LLM_API_KEY", "")
+LLM_BASE_URL = os.environ.get("TECHDEBT_LLM_BASE_URL", "https://api.mistral.ai/v1/chat/completions")
+LLM_MODEL = os.environ.get("TECHDEBT_LLM_MODEL", "devstral-2-latest")
+AI_SUMMARY_ENABLED = bool(LLM_API_KEY)
+
+def generate_ai_summary(digest: str) -> str:
+    """Envoie un texte factuel déjà construit côté serveur au modèle configuré, qui le
+    reformule en synthèse en langage naturel. Le modèle n'a accès à aucune autre donnée
+    que ce texte : il ne peut pas inventer de chiffres qui n'y figurent pas (mais peut
+    se tromper en le reformulant — à relire avant usage officiel)."""
+    payload = {
+        "model": LLM_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Tu rédiges des synthèses factuelles et concises pour un comité de pilotage de "
+                    "gestion de dette technique. Utilise UNIQUEMENT les données fournies dans le message "
+                    "de l'utilisateur, n'invente jamais de chiffres, de noms d'applications ou de dettes. "
+                    "Réponds en français, en 3 à 5 phrases, ton professionnel et direct, sans formule "
+                    "d'introduction ni de conclusion générique."
+                ),
+            },
+            {"role": "user", "content": digest},
+        ],
+        "max_tokens": 400,
+        "temperature": 0.3,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        LLM_BASE_URL,
+        data=data,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {LLM_API_KEY}"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    return result["choices"][0]["message"]["content"].strip()
 
 def require_api_auth(request: Request) -> str:
     """Dépendance pour les endpoints API en lecture ou pour tout utilisateur connecté : lève une 401 JSON si non connecté."""
@@ -841,6 +897,103 @@ def send_alerts_endpoint(db: Session = Depends(get_db), user: str = Depends(requ
     return {"sent": False, "message": "Échec de l'envoi sur Slack. Vérifie l'URL du webhook et la connexion réseau."}
 
 
+@app.post("/api/summary/generate")
+def generate_summary_endpoint(scope: str, db: Session = Depends(get_db), user: str = Depends(require_contributor)):
+    if not AI_SUMMARY_ENABLED:
+        raise HTTPException(
+            status_code=400,
+            detail="Aucune clé API configurée (variable d'environnement TECHDEBT_LLM_API_KEY absente).",
+        )
+
+    if scope == "alerts":
+        debts = db.query(TechDebtModel).all()
+        open_debts = [d for d in debts if d.status != "Résolue"]
+        overdue = [d for d in open_debts if d.target_date and d.target_date < date.today()]
+        soon_threshold = date.today() + timedelta(days=7)
+        soon = [d for d in open_debts if d.target_date and date.today() <= d.target_date <= soon_threshold]
+        stale_pilot = [
+            d for d in open_debts
+            if d.project and d.project.is_pilot and d.status == "Ouverte"
+            and (date.today() - (d.start_date or d.created_at or date.today())).days > 30
+        ]
+
+        if not overdue and not soon and not stale_pilot:
+            return {"summary": "Aucune alerte active actuellement : pas de dette en retard, pas d'échéance proche, et aucune dette pilote bloquée depuis plus de 30 jours."}
+
+        lines = [f"Date du jour : {date.today().isoformat()}", ""]
+        lines.append(f"Dettes en retard ({len(overdue)}) :")
+        for d in overdue[:15]:
+            lines.append(f"- {d.title} | application : {d.project.name if d.project else 'inconnue'} | échéance dépassée le {d.target_date.isoformat()} | impact {d.impact} | charge {d.cost_days}j")
+        lines.append("")
+        lines.append(f"Échéances dans les 7 prochains jours ({len(soon)}) :")
+        for d in soon[:15]:
+            lines.append(f"- {d.title} | application : {d.project.name if d.project else 'inconnue'} | échéance le {d.target_date.isoformat()} | impact {d.impact}")
+        lines.append("")
+        lines.append(f"Dettes pilotes ouvertes depuis plus de 30 jours sans changement de statut ({len(stale_pilot)}) :")
+        for d in stale_pilot[:15]:
+            lines.append(f"- {d.title} | application : {d.project.name if d.project else 'inconnue'} | responsable : {d.assignee or 'non assigné'}")
+        digest = "\n".join(lines)
+
+    elif scope == "portfolio":
+        projects = db.query(ProjectModel).order_by(ProjectModel.is_pilot.desc(), ProjectModel.name).all()
+        debts = db.query(TechDebtModel).all()
+        rows = []
+        for p in projects:
+            p_debts = [d for d in debts if d.project_id == p.id]
+            overdue_count = sum(1 for d in p_debts if d.target_date and d.target_date < date.today() and d.status != "Résolue")
+            rows.append({
+                "project": p,
+                "debt_count": len(p_debts),
+                "total_cost": sum(d.cost_days for d in p_debts),
+                "overdue_count": overdue_count,
+            })
+        if not rows:
+            return {"summary": "Aucune application enregistrée pour le moment."}
+
+        total_apps = len(rows)
+        total_cost = sum(r["total_cost"] for r in rows)
+        total_overdue = sum(r["overdue_count"] for r in rows)
+        pilot_apps = sum(1 for r in rows if r["project"].is_pilot)
+        top_rows = sorted(rows, key=lambda r: -r["total_cost"])[:8]
+
+        lines = [
+            f"Nombre total d'applications : {total_apps}",
+            f"Applications en mode pilote : {pilot_apps}",
+            f"Charge de dette technique totale (toutes applications) : {total_cost} jours",
+            f"Nombre d'applications ayant au moins une dette en retard : {total_overdue}",
+            "",
+            "Détail des applications avec le plus de charge de dette (jusqu'à 8) :",
+        ]
+        for r in top_rows:
+            p = r["project"]
+            lines.append(
+                f"- {p.name} | statut : {p.app_status} | socle : {p.socle or 'non renseigné'} | "
+                f"framework : {p.framework or 'non renseigné'} | {r['debt_count']} dette(s) | "
+                f"{r['total_cost']}j de charge | {r['overdue_count']} en retard"
+                + (" | application pilote" if p.is_pilot else "")
+            )
+        digest = "\n".join(lines)
+
+    else:
+        raise HTTPException(status_code=400, detail="Portée invalide (attendu : 'alerts' ou 'portfolio')")
+
+    try:
+        summary_text = generate_ai_summary(digest)
+    except urllib.error.HTTPError as e:
+        try:
+            error_body = json.loads(e.read().decode("utf-8"))
+            error_detail = error_body.get("message") or error_body.get("error", {}).get("message") or str(error_body)
+        except Exception:
+            error_detail = str(e)
+        raise HTTPException(status_code=502, detail=f"Erreur de l'API IA (HTTP {e.code}) : {error_detail}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Erreur lors de l'appel à l'API IA : {e}")
+
+    log_action(db, user, "Résumé IA", scope, "Génération")
+    db.commit()
+    return {"summary": summary_text}
+
+
 # --- Interface Frontend Complète ---
 
 @app.get("/", response_class=HTMLResponse)
@@ -1024,5 +1177,6 @@ def read_root(request: Request, db: Session = Depends(get_db)):
             "stale_pilot_days": STALE_PILOT_DAYS,
             "recent_audit_log": recent_audit_log,
             "slack_configured": bool(SLACK_WEBHOOK_URL),
+            "ai_summary_enabled": AI_SUMMARY_ENABLED,
         },
     )

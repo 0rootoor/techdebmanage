@@ -1453,6 +1453,20 @@
             <div class="empty-state">Aucune application enregistrée.</div>
             {% else %}
 
+            {% if current_role != 'lecture_seule' %}
+            <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
+                <div style="text-align:right;">
+                    <button type="button" class="btn-ghost" onclick="generateSummary('portfolio')">🤖 Générer un
+                        résumé</button>
+                    {% if not ai_summary_enabled %}<div style="font-size:10.5px; color:var(--muted); margin-top:4px;">IA
+                        non configurée</div>{% endif %}
+                </div>
+            </div>
+            {% endif %}
+            <div id="portfolioSummaryBox"
+                style="display:none; margin-bottom:12px; background:var(--bp-blue-50); border-radius:10px; padding:14px; font-size:13px; line-height:1.6; color:var(--ink);">
+            </div>
+
             <div class="filter-bar">
                 <input type="text" id="portFilterSearch" placeholder="Rechercher une application..."
                     oninput="applyPortfolioFilters()" style="flex:1; min-width:180px;" />
@@ -1567,16 +1581,28 @@
                     <p class="card-subtitle">Échéances dépassées, échéances proches (moins de {{ soon_days }} jours), et
                         dettes pilotes ouvertes depuis plus de {{ stale_pilot_days }} jours.</p>
                 </div>
-                <div style="text-align:right;">
+                <div style="text-align:right; display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end;">
                     {% if current_role != 'lecture_seule' %}
-                    <button type="button" class="btn-secondary" style="width:auto; padding:9px 16px;"
-                        onclick="sendSlackAlert()">Envoyer sur Slack</button>
-                    {% if not slack_configured %}<div style="font-size:10.5px; color:var(--muted); margin-top:4px;">
-                        Webhook non configuré</div>{% endif %}
+                    <div>
+                        <button type="button" class="btn-ghost" onclick="generateSummary('alerts')">🤖 Générer un
+                            résumé</button>
+                        {% if not ai_summary_enabled %}<div
+                            style="font-size:10.5px; color:var(--muted); margin-top:4px;">IA non configurée</div>{%
+                        endif %}
+                    </div>
+                    <div>
+                        <button type="button" class="btn-secondary" style="width:auto; padding:9px 16px;"
+                            onclick="sendSlackAlert()">Envoyer sur Slack</button>
+                        {% if not slack_configured %}<div style="font-size:10.5px; color:var(--muted); margin-top:4px;">
+                            Webhook non configuré</div>{% endif %}
+                    </div>
                     {% endif %}
                 </div>
             </div>
             <p id="slackAlertMessage" style="font-size:12px; margin-top:8px; font-weight:600;"></p>
+            <div id="alertsSummaryBox"
+                style="display:none; margin-top:10px; background:var(--bp-blue-50); border-radius:10px; padding:14px; font-size:13px; line-height:1.6; color:var(--ink);">
+            </div>
 
             {% if not alerts_overdue and not alerts_soon and not alerts_stale_pilot %}
             <div class="empty-state" style="margin-top:10px;">Aucune alerte active. Tout est sous contrôle. 👍</div>
@@ -2563,6 +2589,41 @@
                 msgEl.style.color = 'var(--danger)';
                 msgEl.innerText = "Erreur réseau lors de l'envoi.";
             }
+        }
+
+        async function generateSummary(scope) {
+            const boxId = scope === 'alerts' ? 'alertsSummaryBox' : 'portfolioSummaryBox';
+            const box = document.getElementById(boxId);
+            box.style.display = 'block';
+            box.innerHTML = '<em style="color:var(--muted);">Génération du résumé en cours…</em>';
+            try {
+                const res = await fetch(`/api/summary/generate?scope=${scope}`, { method: 'POST' });
+                const data = await res.json();
+                if (res.ok) {
+                    box.innerHTML = `
+                        <div class="ai-summary-text">${escapeHtml(data.summary)}</div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+                            <span style="font-size:10.5px; color:var(--muted);">Généré par IA à partir des données actuelles — à relire avant diffusion officielle.</span>
+                            <button type="button" class="btn-ghost" style="flex-shrink:0;" onclick="copySummary('${boxId}')">Copier</button>
+                        </div>`;
+                } else {
+                    box.innerHTML = `<span style="color:var(--danger);">${escapeHtml(data.detail)}</span>`;
+                }
+            } catch (err) {
+                box.innerHTML = `<span style="color:var(--danger);">Erreur réseau lors de la génération du résumé.</span>`;
+            }
+        }
+
+        function copySummary(boxId) {
+            const box = document.getElementById(boxId);
+            const textEl = box.querySelector('.ai-summary-text');
+            if (!textEl) return;
+            navigator.clipboard.writeText(textEl.innerText).then(() => {
+                const btn = box.querySelector('button');
+                const original = btn.innerText;
+                btn.innerText = 'Copié !';
+                setTimeout(() => { btn.innerText = original; }, 1500);
+            }).catch(() => alert("Impossible de copier automatiquement — sélectionne le texte manuellement."));
         }
 
         async function createUser(form) {
