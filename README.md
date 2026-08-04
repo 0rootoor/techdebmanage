@@ -29,6 +29,26 @@ Un tableau de bord moderne et complet pour suivre, gérer, planifier et importer
 * **FastAPI**
 * **SQLAlchemy** (Base de données SQLite)
 * **Pandas** & **OpenPyXL** (pour la gestion des imports de fichiers)
+techDebtApp/
+├── requirements.txt
+├── src/
+│   ├── main.py              # Initialisation de l'app, middlewares et inclusion des routeurs
+│   ├── database.py          # SessionLocal, engine et get_db
+│   ├── models.py            # Modèles SQLAlchemy (ProjectModel, TechDebtModel, etc.)
+│   ├── auth.py              # Logique de sécurité, hash_password et dépendances d'authentification
+│   ├── routers/
+│   │   ├── projects.py      # Endpoints API pour les projets et imports
+│   │   ├── debts.py         # Endpoints API pour les dettes, liens et commentaires
+│   │   ├── milestones.py    # Endpoints API pour les jalons Gantt
+│   │   └── views.py         # Routes de rendu IHM (la page d'accueil et le login)
+│   ├── templates/
+│   │   ├── index.html       # Structure HTML uniquement (nettement plus léger)
+│   │   └── login.html
+│   └── static/              # Fichiers statiques servis par FastAPI (StaticFiles)
+│       ├── css/
+│       │   └── style.css    # Tout le style CSS extrait de l'HTML
+│       └── js/
+│           └── app.js       # Toute la logique JavaScript extraite de l'HTML
 
 ---
 
