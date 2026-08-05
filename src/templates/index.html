@@ -98,9 +98,12 @@
         /* KPI cards */
         .kpi-grid {
             display: grid;
-            grid-template-columns: repeat(5, 1fr);
+            grid-auto-flow: column;
+            grid-auto-columns: minmax(130px, 1fr);
             gap: 14px;
             margin-bottom: 28px;
+            overflow-x: auto;
+            padding-bottom: 2px;
         }
 
         .kpi-card {
@@ -841,10 +844,6 @@
         }
 
         @media (max-width: 900px) {
-            .kpi-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-
             .chart-grid {
                 grid-template-columns: 1fr;
             }
@@ -903,12 +902,12 @@
         <!-- KPI -->
         <div class="kpi-grid">
             <div class="kpi-card">
-                <div class="kpi-label">Total dettes</div>
-                <div class="kpi-value tabular">{{ debts|length }}</div>
+                <div class="kpi-label">Applications</div>
+                <div class="kpi-value tabular">{{ projects|length }}</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">Charge totale</div>
-                <div class="kpi-value tabular">{{ total_cost }}<span class="kpi-unit">jours</span></div>
+                <div class="kpi-label">Total dettes</div>
+                <div class="kpi-value tabular">{{ debts|length }}</div>
             </div>
             <div class="kpi-card">
                 <div class="kpi-label">Dettes ouvertes</div>
@@ -919,8 +918,12 @@
                 <div class="kpi-value tabular {{ 'alert' if overdue_count > 0 else '' }}">{{ overdue_count }}</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">Applications</div>
-                <div class="kpi-value tabular">{{ projects|length }}</div>
+                <div class="kpi-label">Charge totale</div>
+                <div class="kpi-value tabular">{{ total_cost }}<span class="kpi-unit">jours</span></div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Apps pilotes</div>
+                <div class="kpi-value tabular">{{ pilot_count }}</div>
             </div>
         </div>
 
