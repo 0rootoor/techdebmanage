@@ -13,6 +13,15 @@ import json
 import os
 import urllib.request
 import urllib.error
+import smtplib
+from email.mime.text import MIMEText
+from openpyxl import Workbook as _OpenpyxlWorkbook
+from openpyxl.chart import BarChart, Reference
+from openpyxl.styles import Font as _XlsxFont, PatternFill as _XlsxPatternFill
+from pptx import Presentation
+from pptx.util import Inches, Pt, Emu
+from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE
 import hashlib
 import secrets
 import inspect
@@ -84,6 +93,7 @@ class TechDebtModel(Base):
     start_date = Column(Date, nullable=True)
     target_date = Column(Date, nullable=True)
     assignee = Column(String, nullable=True)
+    tags = Column(String, nullable=True)  # tags libres séparés par des virgules, ex: "urgent,q3-2026"
     
     project_id = Column(Integer, ForeignKey("projects.id"))
     project = relationship("ProjectModel", back_populates="debts")
@@ -161,6 +171,9 @@ with engine.connect() as conn:
     if "start_date" not in existing_debt_columns:
         conn.execute(text("ALTER TABLE tech_debts ADD COLUMN start_date DATE"))
         conn.commit()
+    if "tags" not in existing_debt_columns:
+        conn.execute(text("ALTER TABLE tech_debts ADD COLUMN tags VARCHAR"))
+        conn.commit()
 
 # --- Application FastAPI ---
 
@@ -220,6 +233,63 @@ def send_slack_message(text: str) -> bool:
         return True
     except Exception as e:
         print(f"Échec de l'envoi Slack : {e}")
+        return False
+
+# --- Alertes Microsoft Teams (optionnel) ---
+# Nécessite un connecteur "Webhook entrant" configuré sur un canal Teams.
+# Variable d'environnement : TECHDEBT_TEAMS_WEBHOOK_URL
+TEAMS_WEBHOOK_URL = os.environ.get("TECHDEBT_TEAMS_WEBHOOK_URL", "")
+
+def send_teams_message(title: str, text: str) -> bool:
+    if not TEAMS_WEBHOOK_URL:
+        return False
+    try:
+        # Format "MessageCard", toujours pris en charge par les connecteurs de webhook
+        # entrant Teams classiques (Office 365 Connectors).
+        payload = {
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "summary": title,
+            "themeColor": "0B2545",
+            "title": title,
+            "text": text.replace("\n", "\n\n"),  # double saut de ligne = nouveau paragraphe en Markdown Teams
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(TEAMS_WEBHOOK_URL, data=data, headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5)
+        return True
+    except Exception as e:
+        print(f"Échec de l'envoi Teams : {e}")
+        return False
+
+# --- Alertes par email (optionnel) ---
+# Variables d'environnement :
+#   TECHDEBT_SMTP_HOST, TECHDEBT_SMTP_PORT (défaut 587), TECHDEBT_SMTP_USER,
+#   TECHDEBT_SMTP_PASSWORD, TECHDEBT_SMTP_FROM (défaut = TECHDEBT_SMTP_USER),
+#   TECHDEBT_ALERT_EMAILS (destinataires, séparés par des virgules)
+SMTP_HOST = os.environ.get("TECHDEBT_SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("TECHDEBT_SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("TECHDEBT_SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("TECHDEBT_SMTP_PASSWORD", "")
+SMTP_FROM = os.environ.get("TECHDEBT_SMTP_FROM", SMTP_USER)
+ALERT_EMAILS = [e.strip() for e in os.environ.get("TECHDEBT_ALERT_EMAILS", "").split(",") if e.strip()]
+EMAIL_ALERTS_ENABLED = bool(SMTP_HOST and SMTP_USER and SMTP_PASSWORD and ALERT_EMAILS)
+
+def send_alert_email(subject: str, body: str) -> bool:
+    if not EMAIL_ALERTS_ENABLED:
+        return False
+    try:
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = SMTP_FROM
+        msg["To"] = ", ".join(ALERT_EMAILS)
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(SMTP_FROM, ALERT_EMAILS, msg.as_string())
+        return True
+    except Exception as e:
+        print(f"Échec de l'envoi email : {e}")
         return False
 
 # --- Résumés IA (optionnel) ---
@@ -576,11 +646,12 @@ async def import_projects(
                 assignee = _clean_str(row.get('debt_assignee'))
                 start_date = _parse_excel_date(row.get('debt_start_date'))
                 target_date = _parse_excel_date(row.get('debt_target_date'))
+                tags = normalize_tags(_clean_str(row.get('debt_tags')) or "")
 
                 db_debt = TechDebtModel(
                     title=debt_title, category=category, impact=impact, status=status,
                     cost_days=cost_days, assignee=assignee,
-                    start_date=start_date, target_date=target_date,
+                    start_date=start_date, target_date=target_date, tags=tags or None,
                     project=db_project,
                 )
                 db.add(db_debt)
@@ -603,6 +674,20 @@ async def import_projects(
 
 # --- API Endpoints : Dettes Techniques (CRUD complet) ---
 
+def normalize_tags(raw_tags: str) -> str:
+    """Nettoie une liste de tags séparés par des virgules : espaces retirés, vides ignorés,
+    doublons supprimés (insensible à la casse), ordre d'origine conservé."""
+    if not raw_tags:
+        return ""
+    seen = set()
+    cleaned = []
+    for tag in raw_tags.split(","):
+        tag = tag.strip()
+        if tag and tag.lower() not in seen:
+            seen.add(tag.lower())
+            cleaned.append(tag)
+    return ",".join(cleaned)
+
 @app.post("/api/debts")
 def create_debt_endpoint(
     project_id: int,
@@ -613,6 +698,7 @@ def create_debt_endpoint(
     assignee: str = "",
     start_date: str = "",
     target_date: str = "",
+    tags: str = "",
     db: Session = Depends(get_db),
     user: str = Depends(require_contributor),
 ):
@@ -626,6 +712,7 @@ def create_debt_endpoint(
         assignee=assignee if assignee else None,
         start_date=start,
         target_date=target,
+        tags=normalize_tags(tags) or None,
         project_id=project_id
     )
     db.add(db_debt)
@@ -644,6 +731,7 @@ def update_debt_endpoint(
     assignee: str = "",
     start_date: str = "",
     target_date: str = "",
+    tags: str = "",
     db: Session = Depends(get_db),
     user: str = Depends(require_contributor),
 ):
@@ -661,6 +749,7 @@ def update_debt_endpoint(
     db_debt.assignee = assignee if assignee else None
     db_debt.start_date = start
     db_debt.target_date = target
+    db_debt.tags = normalize_tags(tags) or None
     log_action(db, user, "Dette", title, "Modification", f"{category} / {impact} / {cost_days}j")
     db.commit()
     return {"message": "Dette mise à jour avec succès"}
@@ -790,6 +879,203 @@ def delete_milestone(milestone_id: int, db: Session = Depends(get_db), user: str
     return {"message": "Jalon supprimé"}
 
 
+def _build_gantt_export_rows(db: Session):
+    """Reconstruit les mêmes lignes que la vue Gantt HTML (dette, dates, impact, statut, pilote)."""
+    debts = db.query(TechDebtModel).all()
+    rows = []
+    for d in debts:
+        start = d.start_date or d.created_at or date.today()
+        if d.target_date:
+            end = d.target_date
+        else:
+            end = start + timedelta(days=max(d.cost_days, 1))
+        if end < start:
+            end = start
+        rows.append({
+            "app": d.project.name if d.project else "Inconnue",
+            "title": d.title,
+            "start": start,
+            "end": end,
+            "impact": d.impact,
+            "status": d.status,
+            "cost_days": d.cost_days,
+            "pilot": bool(d.project and d.project.is_pilot),
+        })
+    rows.sort(key=lambda r: (not r["pilot"], r["start"]))
+    return rows
+
+
+def _export_gantt_xlsx(rows) -> io.BytesIO:
+    wb = _OpenpyxlWorkbook()
+    ws = wb.active
+    ws.title = "Gantt"
+
+    headers = ["Application", "Dette", "Début", "Fin", "Durée (jours)", "Impact", "Statut", "Pilote"]
+    ws.append(headers)
+    header_fill = _XlsxPatternFill("solid", fgColor="0B2545")
+    for cell in ws[1]:
+        cell.font = _XlsxFont(bold=True, color="FFFFFF")
+        cell.fill = header_fill
+
+    min_date = min((r["start"] for r in rows), default=date.today())
+
+    for r in rows:
+        duration = max((r["end"] - r["start"]).days, 1)
+        ws.append([
+            r["app"], r["title"], r["start"], r["end"], duration, r["impact"], r["status"],
+            "Oui" if r["pilot"] else "Non",
+        ])
+
+    last_row = 1 + len(rows)
+    for col_idx, width in enumerate([22, 30, 12, 12, 14, 10, 12, 8], start=1):
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = width
+    for row in ws.iter_rows(min_row=2, max_row=last_row, min_col=3, max_col=4):
+        for cell in row:
+            cell.number_format = "YYYY-MM-DD"
+
+    if rows:
+        # Colonne technique cachée : décalage en jours depuis la date la plus ancienne,
+        # nécessaire pour construire un "faux" Gantt avec un graphique en barres empilées
+        # (technique standard Excel : une 1ère série invisible pour le décalage, une 2e
+        # série visible pour la durée).
+        ws.cell(row=1, column=10, value="Décalage (jours)")
+        for i, r in enumerate(rows, start=2):
+            ws.cell(row=i, column=10, value=(r["start"] - min_date).days)
+        ws.column_dimensions["J"].hidden = True
+
+        chart = BarChart()
+        chart.type = "bar"
+        chart.grouping = "stacked"
+        chart.overlap = 100
+        chart.title = "Vue Gantt — Dette technique"
+        chart.height = max(8, min(2 + 0.5 * len(rows), 24))
+        chart.width = 30
+        chart.y_axis.title = None
+        chart.x_axis.title = "Jours depuis le " + min_date.strftime("%Y-%m-%d")
+
+        cats = Reference(ws, min_col=2, min_row=2, max_row=last_row)
+        data_offset = Reference(ws, min_col=10, min_row=1, max_row=last_row)
+        data_duration = Reference(ws, min_col=5, min_row=1, max_row=last_row)
+        chart.add_data(data_offset, titles_from_data=True)
+        chart.add_data(data_duration, titles_from_data=True)
+        chart.set_categories(cats)
+
+        chart.series[0].graphicalProperties.noFill = True
+        chart.series[0].graphicalProperties.line.noFill = True
+        chart.series[1].graphicalProperties.solidFill = "1256A3"
+        chart.legend = None
+
+        ws.add_chart(chart, f"A{last_row + 3}")
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+def _export_gantt_pptx(rows) -> io.BytesIO:
+    prs = Presentation()
+    prs.slide_width = Inches(13.33)
+    prs.slide_height = Inches(7.5)
+    blank_layout = prs.slide_layouts[6]
+
+    def add_title(slide, text):
+        box = slide.shapes.add_textbox(Inches(0.4), Inches(0.2), Inches(12.4), Inches(0.6))
+        p = box.text_frame.paragraphs[0]
+        p.text = text
+        p.font.size = Pt(24)
+        p.font.bold = True
+        p.font.color.rgb = RGBColor(0x0B, 0x25, 0x45)
+
+    if not rows:
+        slide = prs.slides.add_slide(blank_layout)
+        add_title(slide, "Vue Gantt — Dette technique")
+        box = slide.shapes.add_textbox(Inches(0.4), Inches(1.2), Inches(10), Inches(1))
+        box.text_frame.paragraphs[0].text = "Aucune dette à représenter."
+        buffer = io.BytesIO()
+        prs.save(buffer)
+        buffer.seek(0)
+        return buffer
+
+    min_date = min(r["start"] for r in rows)
+    max_date = max(r["end"] for r in rows)
+    total_days = max((max_date - min_date).days, 1)
+
+    LABEL_LEFT = Inches(0.4)
+    LABEL_WIDTH = Inches(3.0)
+    CHART_LEFT = Inches(3.5)
+    CHART_WIDTH = Emu(Inches(9.3))
+    ROW_HEIGHT = Inches(0.32)
+    TOP_START = Inches(1.1)
+    ROWS_PER_SLIDE = 16
+
+    px_per_day = CHART_WIDTH / total_days
+    impact_colors = {
+        "Faible": RGBColor(0x15, 0x7A, 0x5C),
+        "Moyen": RGBColor(0xB5, 0x73, 0x0A),
+        "Élevé": RGBColor(0xC0, 0x36, 0x2C),
+    }
+
+    for batch_start in range(0, len(rows), ROWS_PER_SLIDE):
+        batch = rows[batch_start:batch_start + ROWS_PER_SLIDE]
+        slide = prs.slides.add_slide(blank_layout)
+        suffix = "" if batch_start == 0 else f" (suite {batch_start // ROWS_PER_SLIDE + 1})"
+        add_title(slide, f"Vue Gantt — Dette technique{suffix}")
+
+        for i, r in enumerate(batch):
+            top = TOP_START + i * ROW_HEIGHT
+
+            label_box = slide.shapes.add_textbox(LABEL_LEFT, top, LABEL_WIDTH, ROW_HEIGHT)
+            p = label_box.text_frame.paragraphs[0]
+            pilot_marker = "⭐ " if r["pilot"] else ""
+            p.text = f"{pilot_marker}{r['title']} ({r['app']})"
+            p.font.size = Pt(9)
+
+            offset_days = (r["start"] - min_date).days
+            duration_days = max((r["end"] - r["start"]).days, 1)
+            bar_left = int(CHART_LEFT) + int(px_per_day * offset_days)
+            bar_width = max(int(px_per_day * duration_days), Emu(Inches(0.12)))
+
+            shape = slide.shapes.add_shape(
+                MSO_SHAPE.ROUNDED_RECTANGLE, bar_left, int(top) + Pt(2), bar_width, int(ROW_HEIGHT) - Pt(4)
+            )
+            shape.fill.solid()
+            shape.fill.fore_color.rgb = impact_colors.get(r["impact"], RGBColor(0x12, 0x56, 0xA3))
+            shape.line.fill.background()
+            tf = shape.text_frame
+            tf.paragraphs[0].text = r["status"]
+            tf.paragraphs[0].font.size = Pt(8)
+            tf.paragraphs[0].font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+            tf.word_wrap = False
+
+    buffer = io.BytesIO()
+    prs.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+@app.get("/api/gantt/export")
+def export_gantt_endpoint(format: str = "xlsx", db: Session = Depends(get_db), user: str = Depends(require_api_auth)):
+    rows = _build_gantt_export_rows(db)
+
+    if format == "pptx":
+        buffer = _export_gantt_pptx(rows)
+        media_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        filename = "gantt_dette_technique.pptx"
+    elif format == "xlsx":
+        buffer = _export_gantt_xlsx(rows)
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = "gantt_dette_technique.xlsx"
+    else:
+        raise HTTPException(status_code=400, detail="Format invalide (attendu : 'xlsx' ou 'pptx')")
+
+    return StreamingResponse(
+        buffer,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/debts/export")
 def export_debts(
     ids: str = "",
@@ -818,12 +1104,13 @@ def export_debts(
             "Statut dette": d.status,
             "Charge (jours)": d.cost_days,
             "Responsable": d.assignee or "",
+            "Tags": d.tags or "",
             "Date de début": d.start_date.isoformat() if d.start_date else "",
             "Date cible": d.target_date.isoformat() if d.target_date else "",
         })
     df = pd.DataFrame(rows, columns=[
         "Application", "Statut app", "Socle", "Framework", "Pilote", "Titre dette",
-        "Catégorie", "Impact", "Statut dette", "Charge (jours)", "Responsable",
+        "Catégorie", "Impact", "Statut dette", "Charge (jours)", "Responsable", "Tags",
         "Date de début", "Date cible",
     ])
 
@@ -853,11 +1140,19 @@ def export_debts(
 
 
 @app.post("/api/alerts/send")
-def send_alerts_endpoint(db: Session = Depends(get_db), user: str = Depends(require_contributor)):
-    if not SLACK_WEBHOOK_URL:
+def send_alerts_endpoint(channel: str = "slack", db: Session = Depends(get_db), user: str = Depends(require_contributor)):
+    channel_config = {
+        "slack": (bool(SLACK_WEBHOOK_URL), "TECHDEBT_SLACK_WEBHOOK_URL"),
+        "teams": (bool(TEAMS_WEBHOOK_URL), "TECHDEBT_TEAMS_WEBHOOK_URL"),
+        "email": (EMAIL_ALERTS_ENABLED, "TECHDEBT_SMTP_HOST / TECHDEBT_SMTP_USER / TECHDEBT_SMTP_PASSWORD / TECHDEBT_ALERT_EMAILS"),
+    }
+    if channel not in channel_config:
+        raise HTTPException(status_code=400, detail="Canal invalide (attendu : slack, teams ou email)")
+    configured, var_names = channel_config[channel]
+    if not configured:
         return {
             "sent": False,
-            "message": "Aucun webhook Slack configuré (variable d'environnement TECHDEBT_SLACK_WEBHOOK_URL absente). "
+            "message": f"Ce canal n'est pas configuré (variable(s) d'environnement {var_names} absente(s)). "
                        "Les alertes restent visibles dans l'onglet Alertes de l'application."
         }
 
@@ -875,7 +1170,8 @@ def send_alerts_endpoint(db: Session = Depends(get_db), user: str = Depends(requ
     if not overdue and not soon and not stale_pilot:
         return {"sent": False, "message": "Aucune alerte à signaler pour le moment."}
 
-    lines = [f"*Alertes dette technique — {date.today().isoformat()}*"]
+    title = f"Alertes dette technique — {date.today().isoformat()}"
+    lines = [f"*{title}*"]
     if overdue:
         lines.append(f"\n:red_circle: *{len(overdue)} dette(s) en retard*")
         for d in overdue[:10]:
@@ -888,13 +1184,27 @@ def send_alerts_endpoint(db: Session = Depends(get_db), user: str = Depends(requ
         lines.append(f"\n:large_blue_circle: *{len(stale_pilot)} dette(s) pilote(s) ouverte(s) depuis plus de 30 jours*")
         for d in stale_pilot[:10]:
             lines.append(f"• {d.title} ({d.project.name if d.project else '?'})")
+    text = "\n".join(lines)
 
-    ok = send_slack_message("\n".join(lines))
+    channel_labels = {"slack": "Slack", "teams": "Teams", "email": "email"}
+    if channel == "slack":
+        ok = send_slack_message(text)
+    elif channel == "teams":
+        # Le format Slack (*gras*, :emoji:) n'est pas interprété par Teams : on repart d'un texte simple.
+        plain_lines = [f"{len(overdue)} dette(s) en retard, {len(soon)} échéance(s) proche(s), {len(stale_pilot)} dette(s) pilote(s) bloquée(s)."]
+        for d in (overdue + soon + stale_pilot)[:20]:
+            plain_lines.append(f"- {d.title} ({d.project.name if d.project else '?'})")
+        ok = send_teams_message(title, "\n".join(plain_lines))
+    else:
+        plain_lines = [title, ""]
+        plain_lines += [l.replace("*", "").replace(":red_circle:", "🔴").replace(":large_orange_circle:", "🟠").replace(":large_blue_circle:", "🔵") for l in lines[1:]]
+        ok = send_alert_email(title, "\n".join(plain_lines))
+
     if ok:
-        log_action(db, user, "Alertes", "Slack", "Envoi", f"{len(overdue)} retard(s), {len(soon)} proche(s), {len(stale_pilot)} pilote(s) bloquée(s)")
+        log_action(db, user, "Alertes", channel_labels[channel], "Envoi", f"{len(overdue)} retard(s), {len(soon)} proche(s), {len(stale_pilot)} pilote(s) bloquée(s)")
         db.commit()
-        return {"sent": True, "message": "Alertes envoyées sur Slack avec succès."}
-    return {"sent": False, "message": "Échec de l'envoi sur Slack. Vérifie l'URL du webhook et la connexion réseau."}
+        return {"sent": True, "message": f"Alertes envoyées par {channel_labels[channel]} avec succès."}
+    return {"sent": False, "message": f"Échec de l'envoi par {channel_labels[channel]}. Vérifie la configuration et la connexion réseau."}
 
 
 @app.post("/api/summary/generate")
@@ -1017,6 +1327,12 @@ def read_root(request: Request, db: Session = Depends(get_db)):
 
     distinct_socles = sorted({p.socle for p in projects if p.socle})
     distinct_frameworks = sorted({p.framework for p in projects if p.framework})
+
+    all_tags = set()
+    for d in debts:
+        if d.tags:
+            all_tags.update(t.strip() for t in d.tags.split(",") if t.strip())
+    distinct_tags = sorted(all_tags)
 
     # Agrégats pour les graphiques (calculés côté serveur, injectés en JSON dans le template)
     categories = ["Code", "Architecture", "Sécurité", "Documentation", "Tests"]
@@ -1164,6 +1480,7 @@ def read_root(request: Request, db: Session = Depends(get_db)):
             "pilot_count": len(pilot_projects),
             "distinct_socles": distinct_socles,
             "distinct_frameworks": distinct_frameworks,
+            "distinct_tags": distinct_tags,
             "today": date.today(),
             "chart_data_json": json.dumps(chart_data, ensure_ascii=False).replace("</", "<\\/"),
             "gantt_data_json": json.dumps(gantt_rows, ensure_ascii=False).replace("</", "<\\/"),
@@ -1177,6 +1494,8 @@ def read_root(request: Request, db: Session = Depends(get_db)):
             "stale_pilot_days": STALE_PILOT_DAYS,
             "recent_audit_log": recent_audit_log,
             "slack_configured": bool(SLACK_WEBHOOK_URL),
+            "teams_configured": bool(TEAMS_WEBHOOK_URL),
+            "email_configured": EMAIL_ALERTS_ENABLED,
             "ai_summary_enabled": AI_SUMMARY_ENABLED,
         },
     )

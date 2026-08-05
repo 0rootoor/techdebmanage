@@ -393,6 +393,15 @@
             color: white;
         }
 
+        .tag-pill {
+            background: var(--bg);
+            color: var(--muted);
+            border: 1px solid var(--border);
+            margin-right: 3px;
+            font-size: 10px;
+            padding: 2px 7px;
+        }
+
         select.status-select {
             font-size: 12px;
             padding: 5px 8px;
@@ -910,8 +919,8 @@
                 <div class="kpi-value tabular {{ 'alert' if overdue_count > 0 else '' }}">{{ overdue_count }}</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">Apps pilotes</div>
-                <div class="kpi-value tabular">{{ pilot_count }}</div>
+                <div class="kpi-label">Applications</div>
+                <div class="kpi-value tabular">{{ projects|length }}</div>
             </div>
         </div>
 
@@ -1070,6 +1079,17 @@
                             </div>
                         </div>
 
+                        <div>
+                            <label class="field-label">Tags (séparés par des virgules)</label>
+                            <input name="tags" id="debt_tags" type="text" list="tag-suggestions"
+                                placeholder="Ex: urgent, q3-2026, dette-legacy" />
+                            <datalist id="tag-suggestions">
+                                {% for t in distinct_tags %}
+                                <option value="{{ t }}"></option>
+                                {% endfor %}
+                            </datalist>
+                        </div>
+
                         <div style="display:flex; gap:8px;">
                             <button type="submit" id="debt-submit-btn" class="btn-primary">Ajouter la dette</button>
                             <button type="button" id="debt-cancel-btn" onclick="resetDebtForm()" class="btn-ghost"
@@ -1134,6 +1154,12 @@
                         <option value="En cours">En cours</option>
                         <option value="Résolue">Résolue</option>
                     </select>
+                    <select id="filterTag" onchange="applyFilters()">
+                        <option value="">Tout tag</option>
+                        {% for t in distinct_tags %}
+                        <option value="{{ t }}">{{ t }}</option>
+                        {% endfor %}
+                    </select>
                     <label
                         style="display:flex; align-items:center; gap:5px; font-size:12.5px; color:var(--muted); white-space:nowrap;">
                         <input type="checkbox" id="filterPilotOnly" onchange="applyFilters()" style="width:auto;" />
@@ -1181,11 +1207,19 @@
                                 data-category="{{ d.category }}" data-impact="{{ d.impact }}"
                                 data-status="{{ d.status }}"
                                 data-pilot="{{ 'true' if d.project and d.project.is_pilot else 'false' }}"
-                                data-search="{{ (d.title ~ ' ' ~ (d.assignee or '') ~ ' ' ~ (d.project.name if d.project else ''))|lower }}"
+                                data-tags="{{ d.tags or '' }}"
+                                data-search="{{ (d.title ~ ' ' ~ (d.assignee or '') ~ ' ' ~ (d.project.name if d.project else '') ~ ' ' ~ (d.tags or ''))|lower }}"
                                 data-cost="{{ d.cost_days }}"
                                 data-target="{{ d.target_date.isoformat() if d.target_date else '' }}">
                                 <td>
                                     <div class="title-cell">{{ d.title }}</div>
+                                    {% if d.tags %}
+                                    <div style="margin-top:3px;">
+                                        {% for t in d.tags.split(',') %}
+                                        <span class="pill tag-pill">{{ t }}</span>
+                                        {% endfor %}
+                                    </div>
+                                    {% endif %}
                                     <div class="app-tag" style="display:flex; align-items:center; gap:6px;">
                                         {% if d.project %}
                                         {% set status_color = '#157A5C' if d.project.app_status == 'En production' else
@@ -1241,7 +1275,7 @@
                                             d.links|length }}</span>{% endif %}</button>
                                     {% if current_role != 'lecture_seule' %}
                                     <button
-                                        onclick='openEditDebt({{ d.id }}, {{ d.project_id }}, {{ d.title|tojson|e }}, {{ d.category|tojson|e }}, {{ d.impact|tojson|e }}, {{ d.cost_days }}, {{ (d.assignee or "")|tojson|e }}, {{ (d.start_date.strftime("%Y-%m-%d") if d.start_date else "")|tojson|e }}, {{ (d.target_date.strftime("%Y-%m-%d") if d.target_date else "")|tojson|e }})'
+                                        onclick='openEditDebt({{ d.id }}, {{ d.project_id }}, {{ d.title|tojson|e }}, {{ d.category|tojson|e }}, {{ d.impact|tojson|e }}, {{ d.cost_days }}, {{ (d.assignee or "")|tojson|e }}, {{ (d.start_date.strftime("%Y-%m-%d") if d.start_date else "")|tojson|e }}, {{ (d.target_date.strftime("%Y-%m-%d") if d.target_date else "")|tojson|e }}, {{ (d.tags or "")|tojson|e }})'
                                         class="icon-btn" title="Modifier" style="color:var(--bp-blue);">✏️</button>
                                     <button onclick="deleteDebt({{ d.id }})" class="icon-btn" title="Supprimer"
                                         style="color:var(--danger);">🗑️</button>
@@ -1312,6 +1346,18 @@
                 </select>
                 <label
                     style="display:flex; align-items:center; gap:5px; font-size:12.5px; color:var(--muted); white-space:nowrap;">
+                    Échéance du
+                    <input type="date" id="planFilterDateFrom" onchange="applyPlanningFilters()"
+                        style="width:auto; padding:6px 8px;" />
+                </label>
+                <label
+                    style="display:flex; align-items:center; gap:5px; font-size:12.5px; color:var(--muted); white-space:nowrap;">
+                    au
+                    <input type="date" id="planFilterDateTo" onchange="applyPlanningFilters()"
+                        style="width:auto; padding:6px 8px;" />
+                </label>
+                <label
+                    style="display:flex; align-items:center; gap:5px; font-size:12.5px; color:var(--muted); white-space:nowrap;">
                     <input type="checkbox" id="planFilterPilotOnly" onchange="applyPlanningFilters()"
                         style="width:auto;" /> Pilotes uniquement
                 </label>
@@ -1338,7 +1384,8 @@
                     data-impact="{{ d.impact }}" data-status="{{ d.status }}"
                     data-pilot="{{ 'true' if d.project and d.project.is_pilot else 'false' }}"
                     data-overdue="{{ 'true' if is_overdue else 'false' }}"
-                    data-search="{{ (d.title ~ ' ' ~ (d.assignee or '') ~ ' ' ~ (d.project.name if d.project else ''))|lower }}">
+                    data-target-date="{{ d.target_date.isoformat() if d.target_date else '' }}"
+                    data-search="{{ (d.title ~ ' ' ~ (d.assignee or '') ~ ' ' ~ (d.project.name if d.project else '') ~ ' ' ~ (d.tags or ''))|lower }}">
                     <div>
                         <div style="display:flex; align-items:center; gap:8px;">
                             <span class="pill pill-cat">{{ d.project.name if d.project else "Inconnu" }}</span>
@@ -1375,8 +1422,11 @@
                         cible. Les applications pilotes apparaissent en premier. Les barres striées indiquent une
                         échéance estimée (aucune date cible saisie).</p>
                 </div>
-                <button type="button" class="btn-ghost" style="flex-shrink:0;" onclick="exportGanttPdf()">⬇ Exporter en
-                    PDF</button>
+                <div style="display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap;">
+                    <button type="button" class="btn-ghost" onclick="exportGanttPdf()">⬇ PDF</button>
+                    <button type="button" class="btn-ghost" onclick="exportGanttFile('xlsx')">⬇ Excel</button>
+                    <button type="button" class="btn-ghost" onclick="exportGanttFile('pptx')">⬇ PowerPoint</button>
+                </div>
             </div>
 
             {% if current_role != 'lecture_seule' %}
@@ -1591,15 +1641,25 @@
                         endif %}
                     </div>
                     <div>
-                        <button type="button" class="btn-secondary" style="width:auto; padding:9px 16px;"
-                            onclick="sendSlackAlert()">Envoyer sur Slack</button>
+                        <button type="button" class="btn-ghost" onclick="sendAlertChannel('slack')">Slack</button>
                         {% if not slack_configured %}<div style="font-size:10.5px; color:var(--muted); margin-top:4px;">
-                            Webhook non configuré</div>{% endif %}
+                            Non configuré</div>{% endif %}
+                    </div>
+                    <div>
+                        <button type="button" class="btn-ghost" onclick="sendAlertChannel('teams')">Teams</button>
+                        {% if not teams_configured %}<div style="font-size:10.5px; color:var(--muted); margin-top:4px;">
+                            Non configuré</div>{% endif %}
+                    </div>
+                    <div>
+                        <button type="button" class="btn-secondary" style="width:auto; padding:9px 16px;"
+                            onclick="sendAlertChannel('email')">Envoyer par email</button>
+                        {% if not email_configured %}<div style="font-size:10.5px; color:var(--muted); margin-top:4px;">
+                            Non configuré</div>{% endif %}
                     </div>
                     {% endif %}
                 </div>
             </div>
-            <p id="slackAlertMessage" style="font-size:12px; margin-top:8px; font-weight:600;"></p>
+            <p id="alertChannelMessage" style="font-size:12px; margin-top:8px; font-weight:600;"></p>
             <div id="alertsSummaryBox"
                 style="display:none; margin-top:10px; background:var(--bp-blue-50); border-radius:10px; padding:14px; font-size:13px; line-height:1.6; color:var(--ink);">
             </div>
@@ -2013,6 +2073,7 @@
             const impact = document.getElementById('filterImpact').value;
             const status = document.getElementById('filterStatus').value;
             const pilotOnly = document.getElementById('filterPilotOnly').checked;
+            const tag = document.getElementById('filterTag').value;
 
             const rows = document.querySelectorAll('#debtsTableBody tr[data-project]');
             const summary = document.getElementById('filterSummary');
@@ -2024,6 +2085,7 @@
             let visibleCost = 0;
 
             rows.forEach(row => {
+                const rowTags = (row.dataset.tags || '').split(',').map(t => t.trim());
                 const matches = (
                     (!search || row.dataset.search.includes(search)) &&
                     (!project || row.dataset.project === project) &&
@@ -2033,7 +2095,8 @@
                     (!category || row.dataset.category === category) &&
                     (!impact || row.dataset.impact === impact) &&
                     (!status || row.dataset.status === status) &&
-                    (!pilotOnly || row.dataset.pilot === 'true')
+                    (!pilotOnly || row.dataset.pilot === 'true') &&
+                    (!tag || rowTags.includes(tag))
                 );
                 row.classList.toggle('filtered-out', !matches);
                 if (matches) {
@@ -2064,6 +2127,7 @@
                 impact: document.getElementById('filterImpact').value,
                 status: document.getElementById('filterStatus').value,
                 pilotOnly: document.getElementById('filterPilotOnly').checked ? '1' : '',
+                tag: document.getElementById('filterTag').value,
             };
             Object.entries(map).forEach(([key, value]) => {
                 if (value) params.set(key, value); else params.delete(key);
@@ -2082,6 +2146,7 @@
             if (params.has('impact')) document.getElementById('filterImpact').value = params.get('impact');
             if (params.has('status')) document.getElementById('filterStatus').value = params.get('status');
             if (params.get('pilotOnly') === '1') document.getElementById('filterPilotOnly').checked = true;
+            if (params.has('tag')) document.getElementById('filterTag').value = params.get('tag');
             const tab = params.get('tab');
             if (tab && tab !== 'register') switchTab(tab);
         }
@@ -2096,6 +2161,7 @@
             document.getElementById('filterImpact').value = '';
             document.getElementById('filterStatus').value = '';
             document.getElementById('filterPilotOnly').checked = false;
+            document.getElementById('filterTag').value = '';
             applyFilters();
         }
 
@@ -2115,9 +2181,14 @@
             const status = document.getElementById('planFilterStatus').value;
             const pilotOnly = document.getElementById('planFilterPilotOnly').checked;
             const overdueOnly = document.getElementById('planFilterOverdueOnly').checked;
+            const dateFrom = document.getElementById('planFilterDateFrom').value;
+            const dateTo = document.getElementById('planFilterDateTo').value;
 
             let visibleCount = 0;
             cards.forEach(card => {
+                const cardDate = card.dataset.targetDate || '';
+                const matchesDateFrom = !dateFrom || (cardDate && cardDate >= dateFrom);
+                const matchesDateTo = !dateTo || (cardDate && cardDate <= dateTo);
                 const matches = (
                     (!search || card.dataset.search.includes(search)) &&
                     (!project || card.dataset.project === project) &&
@@ -2128,7 +2199,8 @@
                     (!impact || card.dataset.impact === impact) &&
                     (!status || card.dataset.status === status) &&
                     (!pilotOnly || card.dataset.pilot === 'true') &&
-                    (!overdueOnly || card.dataset.overdue === 'true')
+                    (!overdueOnly || card.dataset.overdue === 'true') &&
+                    matchesDateFrom && matchesDateTo
                 );
                 card.classList.toggle('filtered-out', !matches);
                 if (matches) visibleCount++;
@@ -2151,6 +2223,8 @@
             document.getElementById('planFilterStatus').value = '';
             document.getElementById('planFilterPilotOnly').checked = false;
             document.getElementById('planFilterOverdueOnly').checked = false;
+            document.getElementById('planFilterDateFrom').value = '';
+            document.getElementById('planFilterDateTo').value = '';
             applyPlanningFilters();
         }
 
@@ -2428,7 +2502,11 @@
             setTimeout(() => document.body.classList.remove('printing-gantt'), 500);
         }
 
-        function openEditDebt(id, projectId, title, category, impact, costDays, assignee, startDate, targetDate) {
+        function exportGanttFile(format) {
+            window.location.href = `/api/gantt/export?format=${format}`;
+        }
+
+        function openEditDebt(id, projectId, title, category, impact, costDays, assignee, startDate, targetDate, tags) {
             document.getElementById('debt_id').value = id;
             document.getElementById('debt_project_id').value = projectId;
             document.getElementById('debt_title').value = title;
@@ -2438,6 +2516,7 @@
             document.getElementById('debt_assignee').value = assignee;
             document.getElementById('debt_start_date').value = startDate;
             document.getElementById('debt_target_date').value = targetDate;
+            document.getElementById('debt_tags').value = tags || '';
 
             document.getElementById('debt-form-title').innerText = "Modifier la dette";
             document.getElementById('debt-submit-btn').innerText = "Mettre à jour";
@@ -2456,6 +2535,7 @@
             document.getElementById('debt_assignee').value = '';
             document.getElementById('debt_start_date').value = '';
             document.getElementById('debt_target_date').value = '';
+            document.getElementById('debt_tags').value = '';
 
             document.getElementById('debt-form-title').innerText = "Déclarer une dette";
             document.getElementById('debt-submit-btn').innerText = "Ajouter la dette";
@@ -2576,12 +2656,12 @@
             });
         }
 
-        async function sendSlackAlert() {
-            const msgEl = document.getElementById('slackAlertMessage');
+        async function sendAlertChannel(channel) {
+            const msgEl = document.getElementById('alertChannelMessage');
             msgEl.style.color = 'var(--muted)';
             msgEl.innerText = 'Envoi en cours…';
             try {
-                const res = await fetch('/api/alerts/send', { method: 'POST' });
+                const res = await fetch(`/api/alerts/send?channel=${channel}`, { method: 'POST' });
                 const data = await res.json();
                 msgEl.style.color = data.sent ? 'var(--success)' : 'var(--danger)';
                 msgEl.innerText = data.message;
